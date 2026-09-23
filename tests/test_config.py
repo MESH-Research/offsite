@@ -1,9 +1,17 @@
+import os
 from pathlib import Path
+from unittest import mock
 
 import pytest
 
 from offsite_backup.config import load_config
 from offsite_backup.errors import ConfigError
+
+
+def load(env):
+    """Run load_config against exactly `env` (the real environment is masked)."""
+    with mock.patch.dict(os.environ, env, clear=True):
+        return load_config()
 
 
 def minimal_env(**overrides):
@@ -39,7 +47,7 @@ def wordpress_env(**overrides):
 
 class TestDefaults:
     def test_minimal_env_parses_with_defaults(self):
-        cfg = load_config(minimal_env())
+        cfg = load(minimal_env())
         assert cfg.primary.repository == "local:/backups/repo"
         assert cfg.primary.password == "repo-pw"
         assert cfg.primary.ssh_private_key is None
@@ -66,7 +74,7 @@ class TestDefaults:
         assert cfg.notify.ping_url is None
 
     def test_overridden_scalars(self):
-        cfg = load_config(
+        cfg = load(
             minimal_env(
                 RESTIC_HOST="kc-backup",
                 RESTIC_CACHE_DIR="/var/cache/restic",
@@ -84,7 +92,7 @@ class TestDefaults:
         assert cfg.max_snapshot_age_hours == 72
 
     def test_repos_property_is_primary_then_mirrors(self):
-        cfg = load_config(
+        cfg = load(
             sftp_env(
                 RESTIC_MIRROR_1_REPOSITORY="sftp:u9@u9.example.net:./repo",
                 RESTIC_MIRROR_1_PASSWORD="mirror-pw",
@@ -100,17 +108,17 @@ class TestRequiredVars:
         env = minimal_env()
         del env[missing]
         with pytest.raises(ConfigError, match=missing):
-            load_config(env)
+            load(env)
 
     @pytest.mark.parametrize("missing", ["SSH_PRIVATE_KEY", "SSH_KNOWN_HOSTS"])
     def test_sftp_repo_requires_ssh_material(self, missing):
         env = sftp_env()
         del env[missing]
         with pytest.raises(ConfigError, match=missing):
-            load_config(env)
+            load(env)
 
     def test_sftp_repo_with_ssh_material_parses(self):
-        cfg = load_config(sftp_env(SSH_PORT="2222"))
+        cfg = load(sftp_env(SSH_PORT="2222"))
         assert cfg.primary.ssh_private_key == "KEYMATERIAL"
         assert cfg.primary.ssh_known_hosts.startswith("u123.your-storagebox.de")
         assert cfg.primary.ssh_port == 2222
@@ -120,12 +128,12 @@ class TestRequiredVars:
     )
     def test_invalid_int_raises_naming_var(self, var):
         with pytest.raises(ConfigError, match=var):
-            load_config(sftp_env(**{var: "not-a-number"}))
+            load(sftp_env(**{var: "not-a-number"}))
 
 
 class TestDbSources:
     def test_sources_parsed_with_whitespace_and_all_fields(self):
-        cfg = load_config(
+        cfg = load(
             wordpress_env(
                 DB_SOURCES="wordpress, idms",
                 DB_WORDPRESS_REPLICA_CLASS="db.r6g.large",
@@ -155,7 +163,7 @@ class TestDbSources:
 
     def test_unknown_engine_raises_naming_var(self):
         with pytest.raises(ConfigError, match="DB_WORDPRESS_ENGINE"):
-            load_config(wordpress_env(DB_WORDPRESS_ENGINE="oracle"))
+            load(wordpress_env(DB_WORDPRESS_ENGINE="oracle"))
 
     @pytest.mark.parametrize(
         "missing",
@@ -171,16 +179,16 @@ class TestDbSources:
         env = wordpress_env()
         del env[missing]
         with pytest.raises(ConfigError, match=missing):
-            load_config(env)
+            load(env)
 
     def test_reserved_source_name_rejected(self):
         with pytest.raises(ConfigError, match="efs"):
-            load_config(sftp_env(DB_SOURCES="efs"))
+            load(sftp_env(DB_SOURCES="efs"))
 
 
 class TestS3:
     def test_explicit_buckets_and_excludes(self):
-        cfg = load_config(
+        cfg = load(
             minimal_env(
                 S3_BUCKETS="assets, uploads",
                 S3_EXCLUDE_BUCKETS="scratch",
@@ -194,12 +202,12 @@ class TestS3:
         assert cfg.s3.staging_dir == Path("/scratch")
 
     def test_unset_buckets_means_discover(self):
-        assert load_config(minimal_env()).s3.buckets is None
+        assert load(minimal_env()).s3.buckets is None
 
 
 class TestMirrors:
     def test_mirror_inherits_primary_ssh_material(self):
-        cfg = load_config(
+        cfg = load(
             sftp_env(
                 RESTIC_MIRROR_1_REPOSITORY="sftp:u9@u9.example.net:./repo",
                 RESTIC_MIRROR_1_PASSWORD="mirror-pw",
@@ -213,7 +221,7 @@ class TestMirrors:
         assert mirror.ssh_port == 23
 
     def test_mirror_own_ssh_material_wins(self):
-        cfg = load_config(
+        cfg = load(
             sftp_env(
                 RESTIC_MIRROR_1_REPOSITORY="sftp:u9@u9.example.net:./repo",
                 RESTIC_MIRROR_1_PASSWORD="mirror-pw",
@@ -229,13 +237,11 @@ class TestMirrors:
 
     def test_mirror_missing_password_raises(self):
         with pytest.raises(ConfigError, match="RESTIC_MIRROR_1_PASSWORD"):
-            load_config(
-                sftp_env(RESTIC_MIRROR_1_REPOSITORY="sftp:u9@u9.example.net:./repo")
-            )
+            load(sftp_env(RESTIC_MIRROR_1_REPOSITORY="sftp:u9@u9.example.net:./repo"))
 
     def test_sftp_mirror_of_local_primary_needs_own_ssh_material(self):
         with pytest.raises(ConfigError, match="RESTIC_MIRROR_1_SSH_PRIVATE_KEY"):
-            load_config(
+            load(
                 minimal_env(
                     RESTIC_MIRROR_1_REPOSITORY="sftp:u9@u9.example.net:./repo",
                     RESTIC_MIRROR_1_PASSWORD="mirror-pw",
@@ -244,7 +250,7 @@ class TestMirrors:
 
     def test_gap_in_mirror_numbering_raises(self):
         with pytest.raises(ConfigError, match="RESTIC_MIRROR_3"):
-            load_config(
+            load(
                 sftp_env(
                     RESTIC_MIRROR_1_REPOSITORY="sftp:u9@u9.example.net:./repo",
                     RESTIC_MIRROR_1_PASSWORD="pw1",
@@ -256,17 +262,17 @@ class TestMirrors:
 
 class TestComponents:
     def test_subset_including_named_source(self):
-        cfg = load_config(wordpress_env(COMPONENTS="efs, wordpress"))
+        cfg = load(wordpress_env(COMPONENTS="efs, wordpress"))
         assert cfg.components == ("efs", "wordpress")
 
     def test_unknown_component_raises(self):
         with pytest.raises(ConfigError, match="COMPONENTS"):
-            load_config(minimal_env(COMPONENTS="bogus"))
+            load(minimal_env(COMPONENTS="bogus"))
 
 
 class TestNotify:
     def test_single_ntfy_target(self):
-        cfg = load_config(
+        cfg = load(
             minimal_env(
                 NTFY_1_URL="https://ntfy.example.org",
                 NTFY_1_TOPIC="kc-backups",
@@ -283,7 +289,7 @@ class TestNotify:
         assert cfg.notify.ping_url == "https://hc.example.org/ping/abc"
 
     def test_multiple_ntfy_targets_in_order(self):
-        cfg = load_config(
+        cfg = load(
             minimal_env(
                 NTFY_1_URL="https://ntfy.example.org",
                 NTFY_1_TOPIC="kc-backups",
@@ -297,15 +303,15 @@ class TestNotify:
 
     def test_ntfy_target_requires_topic(self):
         with pytest.raises(ConfigError, match="NTFY_1_TOPIC"):
-            load_config(minimal_env(NTFY_1_URL="https://ntfy.example.org"))
+            load(minimal_env(NTFY_1_URL="https://ntfy.example.org"))
 
     def test_ntfy_target_requires_url(self):
         with pytest.raises(ConfigError, match="NTFY_1_URL"):
-            load_config(minimal_env(NTFY_1_TOPIC="kc-backups"))
+            load(minimal_env(NTFY_1_TOPIC="kc-backups"))
 
     def test_ntfy_user_requires_password(self):
         with pytest.raises(ConfigError, match="NTFY_1_PASSWORD"):
-            load_config(
+            load(
                 minimal_env(
                     NTFY_1_URL="https://ntfy.example.org",
                     NTFY_1_TOPIC="kc-backups",
@@ -315,7 +321,7 @@ class TestNotify:
 
     def test_gap_in_ntfy_numbering_raises(self):
         with pytest.raises(ConfigError, match="NTFY_3"):
-            load_config(
+            load(
                 minimal_env(
                     NTFY_1_URL="https://ntfy.example.org",
                     NTFY_1_TOPIC="kc-backups",
@@ -325,7 +331,7 @@ class TestNotify:
             )
 
     def test_email_full_config(self):
-        cfg = load_config(
+        cfg = load(
             minimal_env(
                 EMAIL_TO="martin@eve.gd, ops@example.org",
                 SMTP_HOST="smtp.example.org",
@@ -343,7 +349,7 @@ class TestNotify:
         assert cfg.notify.email.smtp_from == "backups@example.org"
 
     def test_email_smtp_port_defaults(self):
-        cfg = load_config(
+        cfg = load(
             minimal_env(
                 EMAIL_TO="martin@eve.gd",
                 SMTP_HOST="smtp.example.org",
@@ -361,4 +367,4 @@ class TestNotify:
         )
         del env[missing]
         with pytest.raises(ConfigError, match=missing):
-            load_config(env)
+            load(env)

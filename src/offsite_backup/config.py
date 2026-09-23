@@ -1,16 +1,20 @@
-"""Environment-variable configuration parsing.
+"""Environment-variable configuration parsing, built on `environs`.
 
-`load_config` is the only entry point; it never reads ``os.environ`` itself —
-the CLI passes the environment mapping in, which keeps parsing pure and
-testable.
+`load_config()` reads the process environment directly; environs provides the
+type conversions (`env.int`, `env.list`, `env.path`) and validation. All
+environs errors are re-raised as `ConfigError`, whose message names the
+offending variable. Tests isolate parsing by patching ``os.environ``.
 """
 
 from __future__ import annotations
 
+import os
 import re
-from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
+
+from environs import Env, EnvError
+from marshmallow.validate import OneOf
 
 from offsite_backup.errors import ConfigError
 
@@ -23,15 +27,15 @@ DEFAULT_KEEP_WEEKLY = 4
 DEFAULT_KEEP_MONTHLY = 6
 DEFAULT_MAX_SNAPSHOT_AGE_HOURS = 48
 DEFAULT_STAGING_BUDGET_BYTES = 170 * 2**30
-DEFAULT_STAGING_DIR = "/mnt/staging"
-DEFAULT_EFS_MOUNT_PATH = "/mnt/efs"
+DEFAULT_STAGING_DIR = Path("/mnt/staging")
+DEFAULT_EFS_MOUNT_PATH = Path("/mnt/efs")
 DEFAULT_REPLICA_TIMEOUT_SECONDS = 7200
 DEFAULT_REPLICA_LAG_WAIT_SECONDS = 1800
 DEFAULT_SMTP_PORT = 587
 
 BUILTIN_COMPONENTS = ("ecs", "db", "efs", "s3")
 RESERVED_SOURCE_NAMES = frozenset({*BUILTIN_COMPONENTS, "all"})
-DB_ENGINES = frozenset({"mariadb", "postgres"})
+DB_ENGINES = ("mariadb", "postgres")
 
 _MIRROR_KEY = re.compile(r"^RESTIC_MIRROR_(\d+)_")
 _NTFY_KEY = re.compile(r"^NTFY_(\d+)_")
@@ -134,112 +138,91 @@ class Config:
         return (self.primary, *self.mirrors)
 
 
-def _require(env: Mapping[str, str], key: str) -> str:
-    value = env.get(key, "").strip()
-    if not value:
-        raise ConfigError(f"{key} is required")
-    return value
+def _names(env: Env, key: str) -> tuple[str, ...]:
+    return tuple(item.strip() for item in env.list(key, []) if item.strip())
 
 
-def _get_int(env: Mapping[str, str], key: str, default: int) -> int:
-    raw = env.get(key, "").strip()
-    if not raw:
-        return default
-    try:
-        return int(raw)
-    except ValueError as exc:
-        raise ConfigError(f"{key} must be an integer, got {raw!r}") from exc
+def _optional_names(env: Env, key: str) -> tuple[str, ...] | None:
+    return _names(env, key) or None
 
 
-def _split_list(raw: str) -> tuple[str, ...]:
-    return tuple(item.strip() for item in raw.split(",") if item.strip())
+def _numbered_groups(pattern: re.Pattern[str], label: str) -> list[int]:
+    """Indices of numbered env groups, enforcing contiguous numbering from 1."""
+    indices = sorted({int(m.group(1)) for key in os.environ if (m := pattern.match(key))})
+    for position, n in enumerate(indices, start=1):
+        if n != position:
+            raise ConfigError(f"{label}_{n} is defined but {label}_{position} is missing")
+    return indices
 
 
-def _load_primary(env: Mapping[str, str]) -> RepoConfig:
-    repository = _require(env, "RESTIC_REPOSITORY")
-    password = _require(env, "RESTIC_PASSWORD")
-    ssh_port = _get_int(env, "SSH_PORT", DEFAULT_SSH_PORT)
-    key = env.get("SSH_PRIVATE_KEY") or None
-    known_hosts = env.get("SSH_KNOWN_HOSTS") or None
-    if repository.startswith("sftp:"):
-        if key is None:
-            raise ConfigError("SSH_PRIVATE_KEY is required for sftp repositories")
-        if known_hosts is None:
-            raise ConfigError("SSH_KNOWN_HOSTS is required for sftp repositories")
-    return RepoConfig(
-        repository=repository,
-        password=password,
-        ssh_private_key=key,
-        ssh_known_hosts=known_hosts,
-        ssh_port=ssh_port,
+def _require_ssh(repository: str, key: str | None, known_hosts: str | None, prefix: str) -> None:
+    if not repository.startswith("sftp:"):
+        return
+    if key is None:
+        raise ConfigError(f"{prefix}SSH_PRIVATE_KEY is required for sftp repositories")
+    if known_hosts is None:
+        raise ConfigError(f"{prefix}SSH_KNOWN_HOSTS is required for sftp repositories")
+
+
+def _load_primary(env: Env) -> RepoConfig:
+    repo = RepoConfig(
+        repository=env.str("RESTIC_REPOSITORY"),
+        password=env.str("RESTIC_PASSWORD"),
+        ssh_private_key=env.str("SSH_PRIVATE_KEY", None),
+        ssh_known_hosts=env.str("SSH_KNOWN_HOSTS", None),
+        ssh_port=env.int("SSH_PORT", DEFAULT_SSH_PORT),
     )
+    _require_ssh(repo.repository, repo.ssh_private_key, repo.ssh_known_hosts, prefix="")
+    return repo
 
 
-def _load_mirrors(env: Mapping[str, str], primary: RepoConfig) -> tuple[RepoConfig, ...]:
-    indices = {int(m.group(1)) for key in env if (m := _MIRROR_KEY.match(key))}
+def _load_mirrors(env: Env, primary: RepoConfig) -> tuple[RepoConfig, ...]:
     mirrors = []
-    for n in sorted(indices):
-        if n != len(mirrors) + 1:
-            raise ConfigError(
-                f"RESTIC_MIRROR_{n} is defined but RESTIC_MIRROR_{len(mirrors) + 1} is missing"
+    for n in _numbered_groups(_MIRROR_KEY, "RESTIC_MIRROR"):
+        with env.prefixed(f"RESTIC_MIRROR_{n}_"):
+            mirror = RepoConfig(
+                repository=env.str("REPOSITORY"),
+                password=env.str("PASSWORD"),
+                ssh_private_key=env.str("SSH_PRIVATE_KEY", None) or primary.ssh_private_key,
+                ssh_known_hosts=env.str("SSH_KNOWN_HOSTS", None) or primary.ssh_known_hosts,
+                ssh_port=env.int("SSH_PORT", primary.ssh_port),
             )
-        prefix = f"RESTIC_MIRROR_{n}_"
-        repository = _require(env, prefix + "REPOSITORY")
-        password = _require(env, prefix + "PASSWORD")
-        key = env.get(prefix + "SSH_PRIVATE_KEY") or primary.ssh_private_key
-        known_hosts = env.get(prefix + "SSH_KNOWN_HOSTS") or primary.ssh_known_hosts
-        ssh_port = _get_int(env, prefix + "SSH_PORT", primary.ssh_port)
-        if repository.startswith("sftp:"):
-            if key is None:
-                raise ConfigError(f"{prefix}SSH_PRIVATE_KEY is required for sftp repositories")
-            if known_hosts is None:
-                raise ConfigError(f"{prefix}SSH_KNOWN_HOSTS is required for sftp repositories")
-        mirrors.append(
-            RepoConfig(
-                repository=repository,
-                password=password,
-                ssh_private_key=key,
-                ssh_known_hosts=known_hosts,
-                ssh_port=ssh_port,
-            )
+        _require_ssh(
+            mirror.repository,
+            mirror.ssh_private_key,
+            mirror.ssh_known_hosts,
+            prefix=f"RESTIC_MIRROR_{n}_",
         )
+        mirrors.append(mirror)
     return tuple(mirrors)
 
 
-def _load_db_sources(env: Mapping[str, str]) -> tuple[DbSourceConfig, ...]:
+def _load_db_sources(env: Env) -> tuple[DbSourceConfig, ...]:
     sources = []
-    for name in _split_list(env.get("DB_SOURCES", "")):
+    for name in _names(env, "DB_SOURCES"):
         if name in RESERVED_SOURCE_NAMES:
             raise ConfigError(f"DB_SOURCES name {name!r} is reserved")
-        prefix = f"DB_{name.upper()}_"
-        engine = _require(env, prefix + "ENGINE")
-        if engine not in DB_ENGINES:
-            raise ConfigError(
-                f"{prefix}ENGINE must be one of {sorted(DB_ENGINES)}, got {engine!r}"
+        with env.prefixed(f"DB_{name.upper()}_"):
+            sources.append(
+                DbSourceConfig(
+                    name=name,
+                    engine=env.str("ENGINE", validate=OneOf(DB_ENGINES)),
+                    instance_id=env.str("INSTANCE_ID"),
+                    user=env.str("USER"),
+                    password=env.str("PASSWORD"),
+                    databases=tuple(s.strip() for s in env.list("DATABASES") if s.strip()),
+                    replica_class=env.str("REPLICA_CLASS", None),
+                    security_group_ids=_names(env, "SECURITY_GROUP_IDS"),
+                    parameter_group=env.str("PARAMETER_GROUP", None),
+                )
             )
-        sources.append(
-            DbSourceConfig(
-                name=name,
-                engine=engine,
-                instance_id=_require(env, prefix + "INSTANCE_ID"),
-                user=_require(env, prefix + "USER"),
-                password=_require(env, prefix + "PASSWORD"),
-                databases=_split_list(_require(env, prefix + "DATABASES")),
-                replica_class=env.get(prefix + "REPLICA_CLASS") or None,
-                security_group_ids=_split_list(env.get(prefix + "SECURITY_GROUP_IDS", "")),
-                parameter_group=env.get(prefix + "PARAMETER_GROUP") or None,
-            )
-        )
     return tuple(sources)
 
 
-def _load_components(
-    env: Mapping[str, str], db_sources: tuple[DbSourceConfig, ...]
-) -> tuple[str, ...]:
-    raw = env.get("COMPONENTS", "").strip()
-    if not raw:
+def _load_components(env: Env, db_sources: tuple[DbSourceConfig, ...]) -> tuple[str, ...]:
+    components = _names(env, "COMPONENTS")
+    if not components:
         return BUILTIN_COMPONENTS
-    components = _split_list(raw)
     allowed = set(BUILTIN_COMPONENTS) | {source.name for source in db_sources}
     for component in components:
         if component not in allowed:
@@ -247,87 +230,78 @@ def _load_components(
     return components
 
 
-def _load_ntfy_targets(env: Mapping[str, str]) -> tuple[NtfyTarget, ...]:
-    indices = {int(m.group(1)) for key in env if (m := _NTFY_KEY.match(key))}
+def _load_ntfy(env: Env) -> tuple[NtfyTarget, ...]:
     targets = []
-    for n in sorted(indices):
-        if n != len(targets) + 1:
-            raise ConfigError(f"NTFY_{n} is defined but NTFY_{len(targets) + 1} is missing")
-        prefix = f"NTFY_{n}_"
-        user = env.get(prefix + "USER") or None
-        password = env.get(prefix + "PASSWORD") or None
-        if user and not password:
-            raise ConfigError(f"{prefix}PASSWORD is required when {prefix}USER is set")
-        targets.append(
-            NtfyTarget(
-                url=_require(env, prefix + "URL"),
-                topic=_require(env, prefix + "TOPIC"),
-                user=user,
-                password=password,
+    for n in _numbered_groups(_NTFY_KEY, "NTFY"):
+        with env.prefixed(f"NTFY_{n}_"):
+            target = NtfyTarget(
+                url=env.str("URL"),
+                topic=env.str("TOPIC"),
+                user=env.str("USER", None),
+                password=env.str("PASSWORD", None),
             )
-        )
+        if target.user and not target.password:
+            raise ConfigError(f"NTFY_{n}_PASSWORD is required when NTFY_{n}_USER is set")
+        targets.append(target)
     return tuple(targets)
 
 
-def _load_email(env: Mapping[str, str]) -> EmailConfig | None:
-    to = _split_list(env.get("EMAIL_TO", ""))
+def _load_email(env: Env) -> EmailConfig | None:
+    to = _names(env, "EMAIL_TO")
     if not to:
         return None
     return EmailConfig(
         to=to,
-        smtp_host=_require(env, "SMTP_HOST"),
-        smtp_from=_require(env, "SMTP_FROM"),
-        smtp_port=_get_int(env, "SMTP_PORT", DEFAULT_SMTP_PORT),
-        smtp_user=env.get("SMTP_USER") or None,
-        smtp_password=env.get("SMTP_PASSWORD") or None,
+        smtp_host=env.str("SMTP_HOST"),
+        smtp_from=env.str("SMTP_FROM"),
+        smtp_port=env.int("SMTP_PORT", DEFAULT_SMTP_PORT),
+        smtp_user=env.str("SMTP_USER", None),
+        smtp_password=env.str("SMTP_PASSWORD", None),
     )
 
 
-def _load_notify(env: Mapping[str, str]) -> NotifyConfig:
-    return NotifyConfig(
-        ntfy=_load_ntfy_targets(env),
-        email=_load_email(env),
-        ping_url=env.get("PING_URL") or None,
-    )
-
-
-def load_config(env: Mapping[str, str]) -> Config:
-    """Parse a full `Config` from an environment mapping.
+def load_config() -> Config:
+    """Parse a full `Config` from the process environment.
 
     Raises `ConfigError` naming the offending variable when a required value
     is missing or invalid.
     """
-    primary = _load_primary(env)
-    db_sources = _load_db_sources(env)
-    cache_dir = env.get("RESTIC_CACHE_DIR") or None
-    s3_buckets_raw = env.get("S3_BUCKETS", "").strip()
-    ecs_clusters_raw = env.get("ECS_CLUSTERS", "").strip()
-    return Config(
-        primary=primary,
-        mirrors=_load_mirrors(env, primary),
-        restic_host=env.get("RESTIC_HOST") or DEFAULT_RESTIC_HOST,
-        cache_dir=Path(cache_dir) if cache_dir else None,
-        keep_daily=_get_int(env, "KEEP_DAILY", DEFAULT_KEEP_DAILY),
-        keep_weekly=_get_int(env, "KEEP_WEEKLY", DEFAULT_KEEP_WEEKLY),
-        keep_monthly=_get_int(env, "KEEP_MONTHLY", DEFAULT_KEEP_MONTHLY),
-        max_snapshot_age_hours=_get_int(
-            env, "MAX_SNAPSHOT_AGE_HOURS", DEFAULT_MAX_SNAPSHOT_AGE_HOURS
-        ),
-        components=_load_components(env, db_sources),
-        db_sources=db_sources,
-        replica_timeout_s=_get_int(env, "REPLICA_TIMEOUT_SECONDS", DEFAULT_REPLICA_TIMEOUT_SECONDS),
-        replica_lag_wait_s=_get_int(
-            env, "REPLICA_LAG_WAIT_SECONDS", DEFAULT_REPLICA_LAG_WAIT_SECONDS
-        ),
-        s3=S3Config(
-            buckets=_split_list(s3_buckets_raw) if s3_buckets_raw else None,
-            exclude_buckets=_split_list(env.get("S3_EXCLUDE_BUCKETS", "")),
-            staging_budget_bytes=_get_int(
-                env, "STAGING_BUDGET_BYTES", DEFAULT_STAGING_BUDGET_BYTES
+    env = Env()
+    try:
+        primary = _load_primary(env)
+        db_sources = _load_db_sources(env)
+        return Config(
+            primary=primary,
+            mirrors=_load_mirrors(env, primary),
+            restic_host=env.str("RESTIC_HOST", DEFAULT_RESTIC_HOST),
+            cache_dir=env.path("RESTIC_CACHE_DIR", None),
+            keep_daily=env.int("KEEP_DAILY", DEFAULT_KEEP_DAILY),
+            keep_weekly=env.int("KEEP_WEEKLY", DEFAULT_KEEP_WEEKLY),
+            keep_monthly=env.int("KEEP_MONTHLY", DEFAULT_KEEP_MONTHLY),
+            max_snapshot_age_hours=env.int(
+                "MAX_SNAPSHOT_AGE_HOURS", DEFAULT_MAX_SNAPSHOT_AGE_HOURS
             ),
-            staging_dir=Path(env.get("STAGING_DIR") or DEFAULT_STAGING_DIR),
-        ),
-        efs=EfsConfig(mount_path=Path(env.get("EFS_MOUNT_PATH") or DEFAULT_EFS_MOUNT_PATH)),
-        ecs=EcsConfig(clusters=_split_list(ecs_clusters_raw) if ecs_clusters_raw else None),
-        notify=_load_notify(env),
-    )
+            components=_load_components(env, db_sources),
+            db_sources=db_sources,
+            replica_timeout_s=env.int("REPLICA_TIMEOUT_SECONDS", DEFAULT_REPLICA_TIMEOUT_SECONDS),
+            replica_lag_wait_s=env.int(
+                "REPLICA_LAG_WAIT_SECONDS", DEFAULT_REPLICA_LAG_WAIT_SECONDS
+            ),
+            s3=S3Config(
+                buckets=_optional_names(env, "S3_BUCKETS"),
+                exclude_buckets=_names(env, "S3_EXCLUDE_BUCKETS"),
+                staging_budget_bytes=env.int(
+                    "STAGING_BUDGET_BYTES", DEFAULT_STAGING_BUDGET_BYTES
+                ),
+                staging_dir=env.path("STAGING_DIR", DEFAULT_STAGING_DIR),
+            ),
+            efs=EfsConfig(mount_path=env.path("EFS_MOUNT_PATH", DEFAULT_EFS_MOUNT_PATH)),
+            ecs=EcsConfig(clusters=_optional_names(env, "ECS_CLUSTERS")),
+            notify=NotifyConfig(
+                ntfy=_load_ntfy(env),
+                email=_load_email(env),
+                ping_url=env.str("PING_URL", None),
+            ),
+        )
+    except EnvError as exc:
+        raise ConfigError(str(exc)) from exc
