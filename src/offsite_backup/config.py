@@ -16,6 +16,9 @@ from offsite_backup.errors import ConfigError
 
 DEFAULT_RESTIC_HOST = "mesh-offsite"
 DEFAULT_SSH_PORT = 23
+# Daily checkpoints are a supported option but deliberately unused: 0 disables
+# the flag entirely (restic rejects zero-valued --keep-* arguments).
+DEFAULT_KEEP_DAILY = 0
 DEFAULT_KEEP_WEEKLY = 4
 DEFAULT_KEEP_MONTHLY = 6
 DEFAULT_MAX_SNAPSHOT_AGE_HOURS = 48
@@ -113,6 +116,7 @@ class Config:
     mirrors: tuple[RepoConfig, ...]
     restic_host: str
     cache_dir: Path | None
+    keep_daily: int
     keep_weekly: int
     keep_monthly: int
     max_snapshot_age_hours: int
@@ -303,6 +307,7 @@ def load_config(env: Mapping[str, str]) -> Config:
         mirrors=_load_mirrors(env, primary),
         restic_host=env.get("RESTIC_HOST") or DEFAULT_RESTIC_HOST,
         cache_dir=Path(cache_dir) if cache_dir else None,
+        keep_daily=_get_int(env, "KEEP_DAILY", DEFAULT_KEEP_DAILY),
         keep_weekly=_get_int(env, "KEEP_WEEKLY", DEFAULT_KEEP_WEEKLY),
         keep_monthly=_get_int(env, "KEEP_MONTHLY", DEFAULT_KEEP_MONTHLY),
         max_snapshot_age_hours=_get_int(

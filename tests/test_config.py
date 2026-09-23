@@ -47,6 +47,7 @@ class TestDefaults:
         assert cfg.mirrors == ()
         assert cfg.restic_host == "mesh-offsite"
         assert cfg.cache_dir is None
+        assert cfg.keep_daily == 0
         assert cfg.keep_weekly == 4
         assert cfg.keep_monthly == 6
         assert cfg.max_snapshot_age_hours == 48
@@ -69,6 +70,7 @@ class TestDefaults:
             minimal_env(
                 RESTIC_HOST="kc-backup",
                 RESTIC_CACHE_DIR="/var/cache/restic",
+                KEEP_DAILY="7",
                 KEEP_WEEKLY="8",
                 KEEP_MONTHLY="12",
                 MAX_SNAPSHOT_AGE_HOURS="72",
@@ -76,6 +78,7 @@ class TestDefaults:
         )
         assert cfg.restic_host == "kc-backup"
         assert cfg.cache_dir == Path("/var/cache/restic")
+        assert cfg.keep_daily == 7
         assert cfg.keep_weekly == 8
         assert cfg.keep_monthly == 12
         assert cfg.max_snapshot_age_hours == 72
@@ -112,7 +115,9 @@ class TestRequiredVars:
         assert cfg.primary.ssh_known_hosts.startswith("u123.your-storagebox.de")
         assert cfg.primary.ssh_port == 2222
 
-    @pytest.mark.parametrize("var", ["KEEP_WEEKLY", "STAGING_BUDGET_BYTES", "SSH_PORT"])
+    @pytest.mark.parametrize(
+        "var", ["KEEP_DAILY", "KEEP_WEEKLY", "STAGING_BUDGET_BYTES", "SSH_PORT"]
+    )
     def test_invalid_int_raises_naming_var(self, var):
         with pytest.raises(ConfigError, match=var):
             load_config(sftp_env(**{var: "not-a-number"}))
