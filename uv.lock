@@ -556,6 +556,7 @@ source = { editable = "." }
 dependencies = [
     { name = "boto3" },
     { name = "environs" },
+    { name = "marshmallow" },
 ]
 
 [package.dev-dependencies]
@@ -570,6 +571,7 @@ dev = [
 requires-dist = [
     { name = "boto3", specifier = ">=1.34" },
     { name = "environs", specifier = ">=15.2.0" },
+    { name = "marshmallow", specifier = ">=4.3.1" },
 ]
 
 [package.metadata.requires-dev]
