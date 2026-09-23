@@ -5,7 +5,7 @@ from offsite_backup.errors import ConfigError
 from offsite_backup.ssh import (
     materialize_key,
     materialize_known_hosts,
-    parse_sftp_user_host,
+    parse_sftp_repository,
     prepare_ssh,
     sftp_command,
 )
@@ -26,12 +26,21 @@ class TestMaterialize:
         assert dest.read_text() == "host ssh-ed25519 AAAA\n"
 
 
-class TestParseSftpUserHost:
-    def test_extracts_user_at_host(self):
-        assert (
-            parse_sftp_user_host("sftp:u123-sub1@u123.your-storagebox.de:./repo")
-            == "u123-sub1@u123.your-storagebox.de"
-        )
+class TestParseSftpRepository:
+    def test_scp_like_form_extracts_user_at_host_without_port(self):
+        target = parse_sftp_repository("sftp:u123-sub1@u123.your-storagebox.de:./repo")
+        assert target.user_host == "u123-sub1@u123.your-storagebox.de"
+        assert target.port is None
+
+    def test_url_form_extracts_user_host_and_port(self):
+        target = parse_sftp_repository("sftp://u1@box.example:2222/repo")
+        assert target.user_host == "u1@box.example"
+        assert target.port == 2222
+
+    def test_url_form_without_port_has_none(self):
+        target = parse_sftp_repository("sftp://u1@box.example/repo")
+        assert target.user_host == "u1@box.example"
+        assert target.port is None
 
     @pytest.mark.parametrize(
         "bad",
@@ -40,11 +49,14 @@ class TestParseSftpUserHost:
             "/plain/path",
             "sftp:no-path-separator",
             "sftp:missinguser:./repo",
+            "sftp://box.example/repo",
+            "sftp://u1@box.example:notaport/repo",
+            "sftp://u1@box.example",
         ],
     )
     def test_rejects_non_sftp_or_malformed(self, bad):
         with pytest.raises(ConfigError):
-            parse_sftp_user_host(bad)
+            parse_sftp_repository(bad)
 
 
 class TestSftpCommand:
@@ -86,6 +98,21 @@ class TestPrepareSsh:
     def test_port_from_repo_config(self, tmp_path):
         cmd = prepare_ssh(self.repo(ssh_port=2222), tmp_path)
         assert "-p 2222 " in cmd
+
+    def test_url_form_port_wins_over_configured_port(self, tmp_path):
+        cmd = prepare_ssh(
+            self.repo(repository="sftp://u1@box.example:2222/repo", ssh_port=23),
+            tmp_path,
+        )
+        assert "-p 2222 " in cmd
+        assert "u1@box.example -s sftp" in cmd
+
+    def test_url_form_without_port_uses_configured_port(self, tmp_path):
+        cmd = prepare_ssh(
+            self.repo(repository="sftp://u1@box.example/repo", ssh_port=2200),
+            tmp_path,
+        )
+        assert "-p 2200 " in cmd
 
     def test_non_sftp_repo_returns_none_and_writes_nothing(self, tmp_path):
         workdir = tmp_path / "ssh"
