@@ -16,8 +16,8 @@ Fargate scheduled tasks inside the VPC. It backs up:
 - **ECS task definitions** — exported as JSON.
 
 Snapshots land in one or more restic repositories over SFTP. Retention keeps
-daily snapshots for a week plus 1-week, 2-week, and monthly checkpoints for six
-months (`--keep-daily 7 --keep-weekly 4 --keep-monthly 6`), rolling over
+weekly snapshots for 4 weeks, and monthly checkpoints for six
+months (`--keep-weekly 4 --keep-monthly 6`), rolling over
 automatically. Weekly `restic check` and monthly read-data verification guard
 the repositories; ntfy and email report every run.
 
@@ -32,7 +32,7 @@ python -m offsite_backup restore db wordpress --at 1w --yes
 
 Documentation of the environment-variable contract, deployment (task
 definitions, IAM policies, EventBridge schedules), and the restore runbook
-lives in `infra/README.md`.
+will live in `infra/README.md`.
 
 ## Development
 
