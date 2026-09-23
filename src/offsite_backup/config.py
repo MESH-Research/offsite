@@ -69,6 +69,8 @@ class DbSourceConfig:
 
 @dataclass(frozen=True)
 class S3Config:
+    """S3 asset backup settings: bucket selection and staging limits."""
+
     buckets: tuple[str, ...] | None  # None = discover all, minus excludes
     exclude_buckets: tuple[str, ...]
     staging_budget_bytes: int
@@ -77,11 +79,15 @@ class S3Config:
 
 @dataclass(frozen=True)
 class EfsConfig:
+    """EFS backup settings: where the volume is mounted in the task."""
+
     mount_path: Path
 
 
 @dataclass(frozen=True)
 class EcsConfig:
+    """ECS export settings: which clusters to describe."""
+
     clusters: tuple[str, ...] | None  # None = discover all
 
 
@@ -109,6 +115,8 @@ class EmailConfig:
 
 @dataclass(frozen=True)
 class NotifyConfig:
+    """All configured notifiees plus the optional dead-man ping URL."""
+
     ntfy: tuple[NtfyTarget, ...] = ()
     email: EmailConfig | None = None
     ping_url: str | None = None
@@ -116,6 +124,8 @@ class NotifyConfig:
 
 @dataclass(frozen=True)
 class Config:
+    """The complete parsed configuration for one container run."""
+
     primary: RepoConfig
     mirrors: tuple[RepoConfig, ...]
     restic_host: str
@@ -135,6 +145,7 @@ class Config:
 
     @property
     def repos(self) -> tuple[RepoConfig, ...]:
+        """Return the primary repository followed by all mirrors."""
         return (self.primary, *self.mirrors)
 
 
@@ -147,7 +158,7 @@ def _optional_names(env: Env, key: str) -> tuple[str, ...] | None:
 
 
 def _numbered_groups(pattern: re.Pattern[str], label: str) -> list[int]:
-    """Indices of numbered env groups, enforcing contiguous numbering from 1."""
+    """Return indices of numbered env groups, enforcing contiguous numbering from 1."""
     indices = sorted({int(m.group(1)) for key in os.environ if (m := pattern.match(key))})
     for position, n in enumerate(indices, start=1):
         if n != position:

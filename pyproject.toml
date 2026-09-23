@@ -32,6 +32,18 @@ testpaths = ["tests"]
 line-length = 100
 src = ["src", "tests"]
 
+[tool.ruff.lint]
+extend-select = ["D"]
+# The class docstring covers construction; per-__init__ docstrings add noise.
+ignore = ["D107"]
+
+[tool.ruff.lint.pydocstyle]
+convention = "pep257"
+
+[tool.ruff.lint.per-file-ignores]
+# Test names are the documentation; docstrings on every test are clutter.
+"tests/*" = ["D"]
+
 [tool.commitizen]
 version = "0.1.0"
 version_files = [

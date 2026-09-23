@@ -24,7 +24,9 @@ class RunReport:
 
     @property
     def ok(self) -> bool:
+        """Return True only when every component result succeeded."""
         return all(result.ok for result in self.results)
 
     def exit_code(self) -> int:
+        """Return 0 for an all-green run, 1 otherwise."""
         return 0 if self.ok else 1
