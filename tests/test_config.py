@@ -60,9 +60,8 @@ class TestDefaults:
         assert cfg.s3.staging_dir == Path("/mnt/staging")
         assert cfg.efs.mount_path == Path("/mnt/efs")
         assert cfg.ecs.clusters is None
-        assert cfg.notify.ntfy_url is None
-        assert cfg.notify.email_to == ()
-        assert cfg.notify.smtp_port == 587
+        assert cfg.notify.ntfy == ()
+        assert cfg.notify.email is None
         assert cfg.notify.ping_url is None
 
     def test_overridden_scalars(self):
@@ -261,33 +260,62 @@ class TestComponents:
 
 
 class TestNotify:
-    def test_ntfy_full_config(self):
+    def test_single_ntfy_target(self):
         cfg = load_config(
             minimal_env(
-                NTFY_URL="https://ntfy.example.org",
-                NTFY_TOPIC="kc-backups",
-                NTFY_USER="backup",
-                NTFY_PASSWORD="ntfy-pw",
+                NTFY_1_URL="https://ntfy.example.org",
+                NTFY_1_TOPIC="kc-backups",
+                NTFY_1_USER="backup",
+                NTFY_1_PASSWORD="ntfy-pw",
                 PING_URL="https://hc.example.org/ping/abc",
             )
         )
-        assert cfg.notify.ntfy_url == "https://ntfy.example.org"
-        assert cfg.notify.ntfy_topic == "kc-backups"
-        assert cfg.notify.ntfy_user == "backup"
-        assert cfg.notify.ntfy_password == "ntfy-pw"
+        (target,) = cfg.notify.ntfy
+        assert target.url == "https://ntfy.example.org"
+        assert target.topic == "kc-backups"
+        assert target.user == "backup"
+        assert target.password == "ntfy-pw"
         assert cfg.notify.ping_url == "https://hc.example.org/ping/abc"
 
-    def test_ntfy_url_requires_topic(self):
-        with pytest.raises(ConfigError, match="NTFY_TOPIC"):
-            load_config(minimal_env(NTFY_URL="https://ntfy.example.org"))
+    def test_multiple_ntfy_targets_in_order(self):
+        cfg = load_config(
+            minimal_env(
+                NTFY_1_URL="https://ntfy.example.org",
+                NTFY_1_TOPIC="kc-backups",
+                NTFY_2_URL="https://ntfy.other.example",
+                NTFY_2_TOPIC="oncall",
+            )
+        )
+        assert [t.topic for t in cfg.notify.ntfy] == ["kc-backups", "oncall"]
+        assert cfg.notify.ntfy[1].user is None
+        assert cfg.notify.ntfy[1].password is None
+
+    def test_ntfy_target_requires_topic(self):
+        with pytest.raises(ConfigError, match="NTFY_1_TOPIC"):
+            load_config(minimal_env(NTFY_1_URL="https://ntfy.example.org"))
+
+    def test_ntfy_target_requires_url(self):
+        with pytest.raises(ConfigError, match="NTFY_1_URL"):
+            load_config(minimal_env(NTFY_1_TOPIC="kc-backups"))
 
     def test_ntfy_user_requires_password(self):
-        with pytest.raises(ConfigError, match="NTFY_PASSWORD"):
+        with pytest.raises(ConfigError, match="NTFY_1_PASSWORD"):
             load_config(
                 minimal_env(
-                    NTFY_URL="https://ntfy.example.org",
-                    NTFY_TOPIC="kc-backups",
-                    NTFY_USER="backup",
+                    NTFY_1_URL="https://ntfy.example.org",
+                    NTFY_1_TOPIC="kc-backups",
+                    NTFY_1_USER="backup",
+                )
+            )
+
+    def test_gap_in_ntfy_numbering_raises(self):
+        with pytest.raises(ConfigError, match="NTFY_3"):
+            load_config(
+                minimal_env(
+                    NTFY_1_URL="https://ntfy.example.org",
+                    NTFY_1_TOPIC="kc-backups",
+                    NTFY_3_URL="https://ntfy.other.example",
+                    NTFY_3_TOPIC="oncall",
                 )
             )
 
@@ -302,10 +330,22 @@ class TestNotify:
                 SMTP_FROM="backups@example.org",
             )
         )
-        assert cfg.notify.email_to == ("martin@eve.gd", "ops@example.org")
-        assert cfg.notify.smtp_host == "smtp.example.org"
-        assert cfg.notify.smtp_port == 2525
-        assert cfg.notify.smtp_from == "backups@example.org"
+        assert cfg.notify.email.to == ("martin@eve.gd", "ops@example.org")
+        assert cfg.notify.email.smtp_host == "smtp.example.org"
+        assert cfg.notify.email.smtp_port == 2525
+        assert cfg.notify.email.smtp_user == "mailer"
+        assert cfg.notify.email.smtp_password == "mail-pw"
+        assert cfg.notify.email.smtp_from == "backups@example.org"
+
+    def test_email_smtp_port_defaults(self):
+        cfg = load_config(
+            minimal_env(
+                EMAIL_TO="martin@eve.gd",
+                SMTP_HOST="smtp.example.org",
+                SMTP_FROM="backups@example.org",
+            )
+        )
+        assert cfg.notify.email.smtp_port == 587
 
     @pytest.mark.parametrize("missing", ["SMTP_HOST", "SMTP_FROM"])
     def test_email_requires_smtp_host_and_from(self, missing):

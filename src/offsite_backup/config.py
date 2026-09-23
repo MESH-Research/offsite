@@ -31,6 +31,7 @@ RESERVED_SOURCE_NAMES = frozenset({*BUILTIN_COMPONENTS, "all"})
 DB_ENGINES = frozenset({"mariadb", "postgres"})
 
 _MIRROR_KEY = re.compile(r"^RESTIC_MIRROR_(\d+)_")
+_NTFY_KEY = re.compile(r"^NTFY_(\d+)_")
 
 
 @dataclass(frozen=True)
@@ -78,17 +79,31 @@ class EcsConfig:
 
 
 @dataclass(frozen=True)
-class NotifyConfig:
-    ntfy_url: str | None = None
-    ntfy_topic: str | None = None
-    ntfy_user: str | None = None
-    ntfy_password: str | None = None
-    email_to: tuple[str, ...] = ()
-    smtp_host: str | None = None
+class NtfyTarget:
+    """One ntfy notifiee: a topic on a server, with optional Basic auth."""
+
+    url: str
+    topic: str
+    user: str | None = None
+    password: str | None = None
+
+
+@dataclass(frozen=True)
+class EmailConfig:
+    """One SMTP transport delivering error mail to any number of recipients."""
+
+    to: tuple[str, ...]
+    smtp_host: str
+    smtp_from: str
     smtp_port: int = DEFAULT_SMTP_PORT
     smtp_user: str | None = None
     smtp_password: str | None = None
-    smtp_from: str | None = None
+
+
+@dataclass(frozen=True)
+class NotifyConfig:
+    ntfy: tuple[NtfyTarget, ...] = ()
+    email: EmailConfig | None = None
     ping_url: str | None = None
 
 
@@ -228,36 +243,46 @@ def _load_components(
     return components
 
 
-def _load_notify(env: Mapping[str, str]) -> NotifyConfig:
-    ntfy_url = env.get("NTFY_URL") or None
-    ntfy_topic = env.get("NTFY_TOPIC") or None
-    ntfy_user = env.get("NTFY_USER") or None
-    ntfy_password = env.get("NTFY_PASSWORD") or None
-    if ntfy_url and not ntfy_topic:
-        raise ConfigError("NTFY_TOPIC is required when NTFY_URL is set")
-    if ntfy_user and not ntfy_password:
-        raise ConfigError("NTFY_PASSWORD is required when NTFY_USER is set")
+def _load_ntfy_targets(env: Mapping[str, str]) -> tuple[NtfyTarget, ...]:
+    indices = {int(m.group(1)) for key in env if (m := _NTFY_KEY.match(key))}
+    targets = []
+    for n in sorted(indices):
+        if n != len(targets) + 1:
+            raise ConfigError(f"NTFY_{n} is defined but NTFY_{len(targets) + 1} is missing")
+        prefix = f"NTFY_{n}_"
+        user = env.get(prefix + "USER") or None
+        password = env.get(prefix + "PASSWORD") or None
+        if user and not password:
+            raise ConfigError(f"{prefix}PASSWORD is required when {prefix}USER is set")
+        targets.append(
+            NtfyTarget(
+                url=_require(env, prefix + "URL"),
+                topic=_require(env, prefix + "TOPIC"),
+                user=user,
+                password=password,
+            )
+        )
+    return tuple(targets)
 
-    email_to = _split_list(env.get("EMAIL_TO", ""))
-    smtp_host = env.get("SMTP_HOST") or None
-    smtp_from = env.get("SMTP_FROM") or None
-    if email_to:
-        if not smtp_host:
-            raise ConfigError("SMTP_HOST is required when EMAIL_TO is set")
-        if not smtp_from:
-            raise ConfigError("SMTP_FROM is required when EMAIL_TO is set")
 
-    return NotifyConfig(
-        ntfy_url=ntfy_url,
-        ntfy_topic=ntfy_topic,
-        ntfy_user=ntfy_user,
-        ntfy_password=ntfy_password,
-        email_to=email_to,
-        smtp_host=smtp_host,
+def _load_email(env: Mapping[str, str]) -> EmailConfig | None:
+    to = _split_list(env.get("EMAIL_TO", ""))
+    if not to:
+        return None
+    return EmailConfig(
+        to=to,
+        smtp_host=_require(env, "SMTP_HOST"),
+        smtp_from=_require(env, "SMTP_FROM"),
         smtp_port=_get_int(env, "SMTP_PORT", DEFAULT_SMTP_PORT),
         smtp_user=env.get("SMTP_USER") or None,
         smtp_password=env.get("SMTP_PASSWORD") or None,
-        smtp_from=smtp_from,
+    )
+
+
+def _load_notify(env: Mapping[str, str]) -> NotifyConfig:
+    return NotifyConfig(
+        ntfy=_load_ntfy_targets(env),
+        email=_load_email(env),
         ping_url=env.get("PING_URL") or None,
     )
 
