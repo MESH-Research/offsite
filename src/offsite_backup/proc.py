@@ -20,12 +20,28 @@ log = logging.getLogger(__name__)
 
 @dataclass
 class ProcResult:
+    """Captured outcome of a finished subprocess.
+
+    `stdout` and `stderr` are decoded text. When a command is run with
+    ``check=False``, a non-zero `returncode` is reported here instead of
+    raising `CommandError`.
+    """
+
     returncode: int
     stdout: str
     stderr: str
 
 
 class Runner(Protocol):
+    """The callable seam through which every external command executes.
+
+    Production code passes `run`; tests inject a fake that matches on argv
+    and returns canned `ProcResult`s (or raises `CommandError`). Anything that
+    shells out — restic, rclone, mariadb-dump, pg_dump, ssh — takes a `Runner`
+    parameter rather than spawning processes itself, so behaviour can be
+    tested without touching the system.
+    """
+
     def __call__(
         self,
         cmd: Sequence[str],
@@ -33,7 +49,9 @@ class Runner(Protocol):
         env: Mapping[str, str] | None = None,
         check: bool = True,
         timeout: float | None = None,
-    ) -> ProcResult: ...
+    ) -> ProcResult:
+        """Execute `cmd` and return its captured outcome; see `run`."""
+        ...
 
 
 def run(
