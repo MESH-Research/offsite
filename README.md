@@ -32,7 +32,9 @@ python -m offsite_backup restore db wordpress --at 1w --yes
 
 Documentation of the environment-variable contract, deployment (task
 definitions, IAM policies, EventBridge schedules), and the restore runbook
-will live in `infra/README.md`.
+will live in `infra/README.md`. Design questions and the reasoning behind
+them are answered in [docs/FAQ.md](docs/FAQ.md); the full environment
+contract is documented in [.env.example](.env.example).
 
 ## Development
 
