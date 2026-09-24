@@ -39,13 +39,13 @@ class TestUsageErrors:
         code, handler = run_cli(["frobnicate"])
         assert code == 2
         assert handler.calls == []
-        assert "usage" in capsys.readouterr().err
+        assert "usage" in capsys.readouterr().err.lower()
 
     def test_no_command_exits_2_with_usage(self, capsys):
         code, handler = run_cli([])
         assert code == 2
         assert handler.calls == []
-        assert "usage" in capsys.readouterr().err
+        assert "usage" in capsys.readouterr().err.lower()
 
     def test_restore_without_target_exits_2(self, capsys):
         code, handler = run_cli(["restore"])

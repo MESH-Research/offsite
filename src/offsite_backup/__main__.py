@@ -7,22 +7,23 @@ mapping without running real operations.
 
 from __future__ import annotations
 
-import argparse
 import sys
 from collections.abc import Callable, Mapping, Sequence
+from types import SimpleNamespace
 
+import click
 from environs import Env
 
 from offsite_backup.__version__ import __version__
 from offsite_backup.config import Config, load_config
 from offsite_backup.errors import ConfigError
 
-Handler = Callable[[Config, argparse.Namespace], int]
+Handler = Callable[[Config, SimpleNamespace], int]
 
 RESTORE_TARGETS = ("db", "efs", "s3", "ecs")
 
 
-def _not_implemented(cfg: Config, args: argparse.Namespace) -> int:
+def _not_implemented(cfg: Config, args: SimpleNamespace) -> int:
     raise NotImplementedError(f"command {args.command!r} is not implemented yet")
 
 
@@ -37,38 +38,75 @@ DEFAULT_HANDLERS: dict[str, Handler] = {
 }
 
 
-def build_parser() -> argparse.ArgumentParser:
-    """Build the argument parser for all commands."""
-    parser = argparse.ArgumentParser(
-        prog="offsite-backup",
-        description="Portable offsite backups of AWS resources via restic.",
-    )
-    parser.add_argument("--version", action="version", version=__version__)
-    commands = parser.add_subparsers(dest="command", required=True)
+def _dispatch(ctx: click.Context, command: str, **params: object) -> int:
+    """Load configuration and hand off to the handler registered for `command`.
 
-    backup = commands.add_parser(
-        "backup", help="back up the given targets (default: the configured set)"
-    )
-    backup.add_argument(
-        "targets",
-        nargs="*",
-        default=[],
-        help="components or DB source names, e.g. efs s3 wordpress",
-    )
+    Runs after Click has fully parsed the command, so usage errors never
+    require a valid configuration.
+    """
+    if ctx.obj["dotenv"]:
+        Env().read_env()
+    try:
+        cfg = load_config()
+    except ConfigError as exc:
+        click.echo(f"configuration error: {exc}", err=True)
+        return 2
+    handler = ctx.obj["handlers"][command]
+    return handler(cfg, SimpleNamespace(command=command, **params))
 
-    commands.add_parser("verify", help="check repositories and snapshot freshness")
-    commands.add_parser("verify-deep", help="verify while re-reading a data subset")
-    commands.add_parser("prune", help="remove unreferenced repository data")
-    commands.add_parser("snapshots", help="list snapshots")
 
-    restore = commands.add_parser("restore", help="restore an artifact back to AWS")
-    restore.add_argument("target", choices=RESTORE_TARGETS, help="artifact type")
-    restore.add_argument(
-        "rest",
-        nargs=argparse.REMAINDER,
-        help="target-specific options (see the restore runbook)",
-    )
-    return parser
+@click.group(help="Portable offsite backups of AWS resources via restic.")
+@click.version_option(__version__, prog_name="offsite-backup")
+def cli() -> None:
+    """Root command group; subcommands do the work."""
+
+
+@cli.command(help="Back up the given targets (default: the configured set).")
+@click.argument("targets", nargs=-1)
+@click.pass_context
+def backup(ctx: click.Context, targets: tuple[str, ...]) -> int:
+    """Run backups for TARGETS (components or DB source names)."""
+    return _dispatch(ctx, "backup", targets=list(targets))
+
+
+@cli.command(help="Check repositories and snapshot freshness.")
+@click.pass_context
+def verify(ctx: click.Context) -> int:
+    """Run the weekly verification."""
+    return _dispatch(ctx, "verify")
+
+
+@cli.command("verify-deep", help="Verify while re-reading a data subset.")
+@click.pass_context
+def verify_deep(ctx: click.Context) -> int:
+    """Run the monthly deep verification."""
+    return _dispatch(ctx, "verify-deep")
+
+
+@cli.command(help="Remove unreferenced repository data.")
+@click.pass_context
+def prune(ctx: click.Context) -> int:
+    """Prune every repository."""
+    return _dispatch(ctx, "prune")
+
+
+@cli.command(help="List snapshots.")
+@click.pass_context
+def snapshots(ctx: click.Context) -> int:
+    """List snapshots as a table."""
+    return _dispatch(ctx, "snapshots")
+
+
+@cli.command(
+    help="Restore an artifact back to AWS.",
+    context_settings={"ignore_unknown_options": True},
+)
+@click.argument("target", type=click.Choice(RESTORE_TARGETS))
+@click.argument("rest", nargs=-1, type=click.UNPROCESSED)
+@click.pass_context
+def restore(ctx: click.Context, target: str, rest: tuple[str, ...]) -> int:
+    """Restore TARGET; remaining options are target-specific (see the runbook)."""
+    return _dispatch(ctx, "restore", target=target, rest=list(rest))
 
 
 def main(
@@ -77,25 +115,24 @@ def main(
     handlers: Mapping[str, Handler] | None = None,
     dotenv: bool = True,
 ) -> int:
-    """Run the CLI: parse `argv`, load configuration, dispatch to a handler.
+    """Run the CLI and return its exit code.
 
     `handlers` overrides the default command handlers (used by tests and as
     the composition root). `dotenv` controls whether a local ``.env`` file is
     read into the environment first (disabled in tests).
     """
+    obj = {"handlers": handlers or DEFAULT_HANDLERS, "dotenv": dotenv}
     try:
-        args = build_parser().parse_args(argv)
-    except SystemExit as exc:
-        return int(exc.code or 0)
-    if dotenv:
-        Env().read_env()
-    try:
-        cfg = load_config()
-    except ConfigError as exc:
-        print(f"configuration error: {exc}", file=sys.stderr)
-        return 2
-    handler = (handlers or DEFAULT_HANDLERS)[args.command]
-    return handler(cfg, args)
+        result = cli.main(
+            args=list(argv) if argv is not None else None,
+            prog_name="offsite-backup",
+            standalone_mode=False,
+            obj=obj,
+        )
+    except click.ClickException as exc:
+        exc.show()
+        return exc.exit_code
+    return int(result or 0)
 
 
 if __name__ == "__main__":
