@@ -5,9 +5,6 @@ within each section. `<SRC>` is an uppercased name from `DB_SOURCES`
 (e.g. `wordpress` → `DB_WORDPRESS_*`); `<N>` is a group number counting from
 1 with no gaps.
 
-This file, [.env.example](../.env.example), and `config.py` are kept in
-lockstep: any commit changing a variable updates all of them.
-
 AWS credentials are deliberately absent: the container uses the standard
 boto3 credential chain (ECS task role in production; `AWS_PROFILE`/`AWS_*`
 variables locally — set `AWS_REGION` if no default region is configured).
@@ -28,9 +25,10 @@ variables locally — set `AWS_REGION` if no default region is configured).
 | `DB_<SRC>_INSTANCE_ID` | source listed in `DB_SOURCES` | RDS instance identifier of the production database to replicate. |
 | `DB_<SRC>_PASSWORD` | source listed in `DB_SOURCES` | Database password (passed via `MYSQL_PWD`/`PGPASSWORD`, never argv). |
 | `DB_<SRC>_USER` | source listed in `DB_SOURCES` | Database user with dump privileges. |
-| `NTFY_<N>_PASSWORD` | `NTFY_<N>_USER` is set | HTTP Basic auth password for the target. |
+| `NTFY_<N>_PASSWORD` | `NTFY_<N>_USER` is set | HTTP Basic auth password. Username and password must be set together. |
 | `NTFY_<N>_TOPIC` | ntfy target `<N>` defined | Topic the notification is posted to. |
 | `NTFY_<N>_URL` | ntfy target `<N>` defined | Base URL of the ntfy server. |
+| `NTFY_<N>_USER` | `NTFY_<N>_PASSWORD` is set | HTTP Basic auth username. Username and password must be set together; omit both only for a public, unauthenticated topic. |
 | `RESTIC_MIRROR_<N>_PASSWORD` | mirror `<N>` defined | Password for the mirror repository. |
 | `RESTIC_MIRROR_<N>_REPOSITORY` | mirror `<N>` defined | Mirror repository location (defines the mirror; same forms as `RESTIC_REPOSITORY`). |
 | `RESTIC_MIRROR_<N>_SSH_KNOWN_HOSTS` | mirror is sftp and the primary has no material to inherit | Pinned host key for the mirror's host. |
@@ -56,7 +54,6 @@ variables locally — set `AWS_REGION` if no default region is configured).
 | `KEEP_MONTHLY` | `6` | Month-end checkpoints retained (see [FAQ](FAQ.md) for the exact keep-set). |
 | `KEEP_WEEKLY` | `4` | Week-end checkpoints retained. |
 | `MAX_SNAPSHOT_AGE_HOURS` | `48` | `verify` fails if any required tag's newest snapshot is older than this. |
-| `NTFY_<N>_USER` | *(no auth)* | HTTP Basic auth user for the target. |
 | `PING_URL` | *(unset)* | Dead-man switch: pinged on success, `<url>/fail` on failure. |
 | `REPLICA_LAG_WAIT_SECONDS` | `1800` | Longest wait for a replica to catch up before dumping. |
 | `REPLICA_TIMEOUT_SECONDS` | `7200` | Longest wait for a replica to become available. |

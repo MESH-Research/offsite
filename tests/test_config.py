@@ -319,6 +319,16 @@ class TestNotify:
                 )
             )
 
+    def test_ntfy_password_requires_user(self):
+        with pytest.raises(ConfigError, match="NTFY_1_USER"):
+            load(
+                minimal_env(
+                    NTFY_1_URL="https://ntfy.example.org",
+                    NTFY_1_TOPIC="kc-backups",
+                    NTFY_1_PASSWORD="ntfy-pw",
+                )
+            )
+
     def test_gap_in_ntfy_numbering_raises(self):
         with pytest.raises(ConfigError, match="NTFY_3"):
             load(

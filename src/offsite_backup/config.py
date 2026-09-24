@@ -251,8 +251,12 @@ def _load_ntfy(env: Env) -> tuple[NtfyTarget, ...]:
                 user=env.str("USER", None),
                 password=env.str("PASSWORD", None),
             )
+        # ntfy Basic auth needs both halves; one without the other is a
+        # misconfiguration, not an unauthenticated target.
         if target.user and not target.password:
             raise ConfigError(f"NTFY_{n}_PASSWORD is required when NTFY_{n}_USER is set")
+        if target.password and not target.user:
+            raise ConfigError(f"NTFY_{n}_USER is required when NTFY_{n}_PASSWORD is set")
         targets.append(target)
     return tuple(targets)
 
