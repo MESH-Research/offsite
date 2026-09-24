@@ -1,41 +1,22 @@
-"""SSH material handling for restic's sftp backend.
+"""SSH client configuration for restic's sftp backend.
 
-Key/known-hosts env values are materialised as files at runtime, and the
-`-o sftp.command=...` string restic needs is derived from the repository URL
-itself so the two can never drift.
+Instead of pinning a single ``-o sftp.command=...`` (which is global per
+restic invocation and therefore breaks ``restic copy`` between two sftp
+repositories on different hosts), we materialise an OpenSSH client config
+under a private ``$HOME``: one ``Match host ... user ...`` block per
+repository selects the right identity file and port, and restic's default
+ssh invocation does the rest.
 """
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import urlsplit
 
 from offsite_backup.config import RepoConfig
 from offsite_backup.errors import ConfigError
-
-KEY_FILENAME = "id_offsite"
-KNOWN_HOSTS_FILENAME = "known_hosts"
-
-
-def _write(content: str, dest: Path, mode: int) -> Path:
-    dest.parent.mkdir(parents=True, exist_ok=True)
-    dest.write_text(content.rstrip("\n") + "\n")
-    dest.chmod(mode)
-    return dest
-
-
-def materialize_key(material: str, dest: Path) -> Path:
-    """Write private-key material to `dest` with 0600 permissions.
-
-    Ensures exactly one trailing newline (OpenSSH rejects keys without one).
-    """
-    return _write(material, dest, 0o600)
-
-
-def materialize_known_hosts(entries: str, dest: Path) -> Path:
-    """Write known-hosts entries to `dest`, ensuring a trailing newline."""
-    return _write(entries, dest, 0o600)
 
 
 @dataclass(frozen=True)
@@ -79,25 +60,60 @@ def parse_sftp_repository(repository: str) -> SftpTarget:
     return SftpTarget(user_host=user_host, port=None)
 
 
-def sftp_command(user_host: str, port: int, key: Path, known_hosts: Path) -> str:
-    """Render the ssh command restic should use for the sftp backend."""
-    return (
-        f"ssh -p {port} -i {key} -o UserKnownHostsFile={known_hosts} "
-        f"-o StrictHostKeyChecking=yes {user_host} -s sftp"
-    )
+def prepare_ssh_home(repos: Sequence[RepoConfig], home: Path) -> Path:
+    """Materialise SSH client config for every sftp repo under ``home``/.ssh.
 
+    Writes one identity file per sftp repository, an aggregated known_hosts,
+    and a config whose ``Match host ... user ...`` blocks select the right
+    identity and port per connection — including when a single ``restic copy``
+    talks to two different sftp hosts. Repositories sharing host and user are
+    written once. Non-sftp repositories are skipped entirely; when no sftp
+    repository is present nothing is written.
 
-def prepare_ssh(repo: RepoConfig, workdir: Path) -> str | None:
-    """Materialise `repo`'s SSH files under `workdir` and return the sftp command.
-
-    Returns None for non-sftp repositories (nothing is written).
+    Returns ``home``, which callers set as ``$HOME`` for restic subprocesses.
     """
-    if not repo.repository.startswith("sftp:"):
-        return None
-    if repo.ssh_private_key is None or repo.ssh_known_hosts is None:
-        raise ConfigError(f"sftp repository {repo.repository!r} has no SSH material")
-    target = parse_sftp_repository(repo.repository)
-    port = target.port if target.port is not None else repo.ssh_port
-    key = materialize_key(repo.ssh_private_key, workdir / KEY_FILENAME)
-    known_hosts = materialize_known_hosts(repo.ssh_known_hosts, workdir / KNOWN_HOSTS_FILENAME)
-    return sftp_command(target.user_host, port, key, known_hosts)
+    sftp_repos = [r for r in repos if r.repository.startswith("sftp:")]
+    if not sftp_repos:
+        return home
+
+    ssh_dir = home / ".ssh"
+    ssh_dir.mkdir(parents=True, exist_ok=True)
+    ssh_dir.chmod(0o700)
+    known_hosts = ssh_dir / "known_hosts"
+
+    blocks: list[str] = []
+    kh_entries: list[str] = []
+    seen: set[tuple[str, str]] = set()
+    for index, repo in enumerate(sftp_repos, start=1):
+        if repo.ssh_private_key is None or repo.ssh_known_hosts is None:
+            raise ConfigError(f"sftp repository {repo.repository!r} has no SSH material")
+        target = parse_sftp_repository(repo.repository)
+        user, _, hostname = target.user_host.partition("@")
+        if (hostname, user) in seen:
+            continue
+        seen.add((hostname, user))
+
+        identity = _write(repo.ssh_private_key, ssh_dir / f"id_{index}", 0o600)
+        entry = repo.ssh_known_hosts.rstrip("\n")
+        if entry not in kh_entries:
+            kh_entries.append(entry)
+        port = target.port if target.port is not None else repo.ssh_port
+        blocks.append(
+            f"Match host {hostname} user {user}\n  IdentityFile {identity}\n  Port {port}\n"
+        )
+
+    defaults = (
+        "Host *\n"
+        "  IdentitiesOnly yes\n"
+        "  StrictHostKeyChecking yes\n"
+        f"  UserKnownHostsFile {known_hosts}\n"
+    )
+    _write("\n".join([defaults, *blocks]), ssh_dir / "config", 0o600)
+    _write("\n".join(kh_entries), known_hosts, 0o600)
+    return home
+
+
+def _write(content: str, dest: Path, mode: int) -> Path:
+    dest.write_text(content.rstrip("\n") + "\n")
+    dest.chmod(mode)
+    return dest

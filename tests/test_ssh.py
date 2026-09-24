@@ -2,28 +2,19 @@ import pytest
 
 from offsite_backup.config import RepoConfig
 from offsite_backup.errors import ConfigError
-from offsite_backup.ssh import (
-    materialize_key,
-    materialize_known_hosts,
-    parse_sftp_repository,
-    prepare_ssh,
-    sftp_command,
-)
+from offsite_backup.ssh import parse_sftp_repository, prepare_ssh_home
 
 
-class TestMaterialize:
-    def test_key_written_with_trailing_newline_and_0600(self, tmp_path):
-        dest = materialize_key("KEYMATERIAL", tmp_path / "id")
-        assert dest.read_text() == "KEYMATERIAL\n"
-        assert dest.stat().st_mode & 0o777 == 0o600
-
-    def test_key_existing_newline_not_doubled(self, tmp_path):
-        dest = materialize_key("KEYMATERIAL\n", tmp_path / "id")
-        assert dest.read_text() == "KEYMATERIAL\n"
-
-    def test_known_hosts_written_with_trailing_newline(self, tmp_path):
-        dest = materialize_known_hosts("host ssh-ed25519 AAAA", tmp_path / "kh")
-        assert dest.read_text() == "host ssh-ed25519 AAAA\n"
+def repo(**overrides):
+    fields = {
+        "repository": "sftp:u1-sub1@box.example:./repo",
+        "password": "pw",
+        "ssh_private_key": "KEYMATERIAL",
+        "ssh_known_hosts": "box.example ssh-ed25519 AAAA",
+        "ssh_port": 23,
+    }
+    fields.update(overrides)
+    return RepoConfig(**fields)
 
 
 class TestParseSftpRepository:
@@ -59,67 +50,81 @@ class TestParseSftpRepository:
             parse_sftp_repository(bad)
 
 
-class TestSftpCommand:
-    def test_renders_exact_command(self, tmp_path):
-        cmd = sftp_command(
-            "u1@box.example", 23, tmp_path / "id", tmp_path / "kh"
+class TestPrepareSshHome:
+    def test_writes_config_identity_and_known_hosts(self, tmp_path):
+        home = prepare_ssh_home([repo()], tmp_path / "home")
+        ssh_dir = home / ".ssh"
+        config = (ssh_dir / "config").read_text()
+        identity = ssh_dir / "id_1"
+        known_hosts = ssh_dir / "known_hosts"
+
+        assert identity.read_text() == "KEYMATERIAL\n"
+        assert identity.stat().st_mode & 0o777 == 0o600
+        assert known_hosts.read_text() == "box.example ssh-ed25519 AAAA\n"
+        assert (ssh_dir / "config").stat().st_mode & 0o777 == 0o600
+        assert ssh_dir.stat().st_mode & 0o777 == 0o700
+
+        assert "StrictHostKeyChecking yes" in config
+        assert "IdentitiesOnly yes" in config
+        assert f"UserKnownHostsFile {known_hosts}" in config
+        assert "Match host box.example user u1-sub1" in config
+        assert f"IdentityFile {identity}" in config
+        assert "Port 23" in config
+
+    def test_url_embedded_port_wins_over_configured_port(self, tmp_path):
+        home = prepare_ssh_home(
+            [repo(repository="sftp://u1-sub1@box.example:2222/repo")], tmp_path
         )
-        assert cmd == (
-            f"ssh -p 23 -i {tmp_path / 'id'} -o UserKnownHostsFile={tmp_path / 'kh'} "
-            "-o StrictHostKeyChecking=yes u1@box.example -s sftp"
+        config = (home / ".ssh" / "config").read_text()
+        assert "Port 2222" in config
+        assert "Port 23" not in config
+
+    def test_multiple_hosts_get_separate_match_blocks(self, tmp_path):
+        mirror = repo(
+            repository="sftp:u9@other.example:./repo",
+            ssh_private_key="MIRRORKEY",
+            ssh_known_hosts="other.example ssh-ed25519 BBBB",
+            ssh_port=24,
         )
+        home = prepare_ssh_home([repo(), mirror], tmp_path)
+        ssh_dir = home / ".ssh"
+        config = (ssh_dir / "config").read_text()
 
+        assert "Match host box.example user u1-sub1" in config
+        assert "Match host other.example user u9" in config
+        assert "Port 23" in config
+        assert "Port 24" in config
+        assert (ssh_dir / "id_2").read_text() == "MIRRORKEY\n"
+        kh = (ssh_dir / "known_hosts").read_text()
+        assert "box.example ssh-ed25519 AAAA" in kh
+        assert "other.example ssh-ed25519 BBBB" in kh
 
-class TestPrepareSsh:
-    def repo(self, **overrides):
-        fields = {
-            "repository": "sftp:u1@box.example:./repo",
-            "password": "pw",
-            "ssh_private_key": "KEYMATERIAL",
-            "ssh_known_hosts": "box.example ssh-ed25519 AAAA",
-            "ssh_port": 23,
-        }
-        fields.update(overrides)
-        return RepoConfig(**fields)
+    def test_same_host_and_user_written_once(self, tmp_path):
+        second = repo(repository="sftp:u1-sub1@box.example:./other-repo")
+        home = prepare_ssh_home([repo(), second], tmp_path)
+        config = (home / ".ssh" / "config").read_text()
+        assert config.count("Match host box.example user u1-sub1") == 1
+        kh = (home / ".ssh" / "known_hosts").read_text()
+        assert kh.count("box.example ssh-ed25519 AAAA") == 1
 
-    def test_sftp_repo_materialises_files_and_returns_command(self, tmp_path):
-        workdir = tmp_path / "ssh" / "repo0"
-        cmd = prepare_ssh(self.repo(), workdir)
-        key = workdir / "id_offsite"
-        kh = workdir / "known_hosts"
-        assert key.read_text() == "KEYMATERIAL\n"
-        assert key.stat().st_mode & 0o777 == 0o600
-        assert kh.read_text() == "box.example ssh-ed25519 AAAA\n"
-        assert cmd == (
-            f"ssh -p 23 -i {key} -o UserKnownHostsFile={kh} "
-            "-o StrictHostKeyChecking=yes u1@box.example -s sftp"
+    def test_same_host_different_users_get_own_blocks(self, tmp_path):
+        second = repo(
+            repository="sftp:u1-sub2@box.example:./repo",
+            ssh_private_key="SUB2KEY",
         )
+        home = prepare_ssh_home([repo(), second], tmp_path)
+        config = (home / ".ssh" / "config").read_text()
+        assert "Match host box.example user u1-sub1" in config
+        assert "Match host box.example user u1-sub2" in config
 
-    def test_port_from_repo_config(self, tmp_path):
-        cmd = prepare_ssh(self.repo(ssh_port=2222), tmp_path)
-        assert "-p 2222 " in cmd
-
-    def test_url_form_port_wins_over_configured_port(self, tmp_path):
-        cmd = prepare_ssh(
-            self.repo(repository="sftp://u1@box.example:2222/repo", ssh_port=23),
-            tmp_path,
+    def test_non_sftp_repos_write_nothing(self, tmp_path):
+        home = prepare_ssh_home(
+            [repo(repository="local:/backups/repo", ssh_private_key=None,
+                  ssh_known_hosts=None)],
+            tmp_path / "home",
         )
-        assert "-p 2222 " in cmd
-        assert "u1@box.example -s sftp" in cmd
+        assert not (home / ".ssh").exists()
 
-    def test_url_form_without_port_uses_configured_port(self, tmp_path):
-        cmd = prepare_ssh(
-            self.repo(repository="sftp://u1@box.example/repo", ssh_port=2200),
-            tmp_path,
-        )
-        assert "-p 2200 " in cmd
-
-    def test_non_sftp_repo_returns_none_and_writes_nothing(self, tmp_path):
-        workdir = tmp_path / "ssh"
-        result = prepare_ssh(
-            self.repo(repository="local:/backups/repo", ssh_private_key=None,
-                      ssh_known_hosts=None),
-            workdir,
-        )
-        assert result is None
-        assert not workdir.exists()
+    def test_sftp_repo_without_material_raises(self, tmp_path):
+        with pytest.raises(ConfigError):
+            prepare_ssh_home([repo(ssh_private_key=None)], tmp_path)
