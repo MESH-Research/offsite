@@ -34,7 +34,8 @@ Documentation of the environment-variable contract, deployment (task
 definitions, IAM policies, EventBridge schedules), and the restore runbook
 will live in `infra/README.md`. Design questions and the reasoning behind
 them are answered in [docs/FAQ.md](docs/FAQ.md); the full environment
-contract is documented in [.env.example](.env.example).
+contract is documented in [docs/environment.md](docs/environment.md) and,
+in copy-paste form, in [.env.example](.env.example).
 
 ## Development
 
