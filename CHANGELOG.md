@@ -1,3 +1,17 @@
+## 0.3.0 (2026-09-24)
+
+### Feat
+
+- **restic**: add restic CLI wrapper with multi-repo copy support
+
+### Fix
+
+- **config**: require ntfy username and password together
+
+### Refactor
+
+- **ssh**: generate OpenSSH client config to support multi-repo sftp
+
 ## 0.2.0 (2026-09-24)
 
 ### Feat
