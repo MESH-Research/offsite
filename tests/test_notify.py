@@ -4,6 +4,7 @@ from contextlib import nullcontext
 import pytest
 
 from offsite_backup.config import EmailConfig, NotifyConfig, NtfyTarget
+from offsite_backup.errors import NotificationError
 from offsite_backup.notify import Notification, Notifier, notification_for
 from offsite_backup.results import ComponentResult, RunReport
 
@@ -118,8 +119,12 @@ class TestNtfy:
         opener = FakeOpener(failing=("ntfy.example.org",))
         errors = notifier(NotifyConfig(ntfy=(NTFY_A, NTFY_B)), opener).notify(GOOD)
         assert len(opener.to("oncall")) == 1
-        assert len(errors) == 1
-        assert "kc-backups" in errors[0]
+        (error,) = errors
+        assert isinstance(error, NotificationError)
+        assert error.channel == "ntfy"
+        assert "kc-backups" in error.target
+        assert isinstance(error.cause, OSError)
+        assert "kc-backups" in str(error)
 
 
 class TestEmail:
@@ -161,8 +166,11 @@ class TestEmail:
     def test_smtp_failure_is_reported_not_raised(self):
         smtp = FakeSmtpFactory(failing=True)
         errors = notifier(NotifyConfig(email=EMAIL), smtp=smtp).notify(BAD)
-        assert len(errors) == 1
-        assert "smtp" in errors[0].lower()
+        (error,) = errors
+        assert isinstance(error, NotificationError)
+        assert error.channel == "email"
+        assert error.target == "smtp.example.org"
+        assert isinstance(error.cause, OSError)
 
 
 class TestPing:
@@ -179,8 +187,10 @@ class TestPing:
         errors = notifier(NotifyConfig(ping_url="https://hc.example.org/ping/abc"), opener).notify(
             GOOD
         )
-        assert len(errors) == 1
-        assert "ping" in errors[0].lower()
+        (error,) = errors
+        assert isinstance(error, NotificationError)
+        assert error.channel == "ping"
+        assert error.target == "https://hc.example.org/ping/abc"
 
 
 class TestNothingConfigured:

@@ -19,3 +19,17 @@ class CommandError(Exception):
         self.cmd = cmd
         self.returncode = returncode
         self.stderr = stderr
+
+
+class NotificationError(Exception):
+    """A notification channel failed to deliver.
+
+    Collected and returned by `Notifier.notify` rather than raised past it:
+    a broken channel must never fail the operation being reported on.
+    """
+
+    def __init__(self, channel: str, target: str, cause: BaseException) -> None:
+        super().__init__(f"{channel} {target}: {cause}")
+        self.channel = channel
+        self.target = target
+        self.cause = cause

@@ -15,6 +15,7 @@ from dataclasses import dataclass
 from email.message import EmailMessage
 
 from offsite_backup.config import EmailConfig, NotifyConfig, NtfyTarget
+from offsite_backup.errors import NotificationError
 from offsite_backup.results import RunReport
 
 TIMEOUT_SECONDS = 15
@@ -68,31 +69,45 @@ class Notifier:
         self._opener = opener
         self._smtp_factory = smtp_factory
 
-    def notify(self, notification: Notification) -> list[str]:
+    def notify(self, notification: Notification) -> list[NotificationError]:
         """Send `notification` everywhere it should go.
 
         ntfy targets receive both successes and failures; email goes out only
         on failure; the ping URL is hit on success and ``<url>/fail`` on
-        failure. Returns a list of delivery error descriptions (empty when
-        everything was delivered). Never raises.
+        failure. Returns the delivery failures as `NotificationError` values
+        (empty when everything was delivered). Never raises.
         """
-        errors: list[str] = []
+        errors: list[NotificationError] = []
         for target in self._cfg.ntfy:
-            try:
-                self._post_ntfy(target, notification)
-            except Exception as exc:  # noqa: BLE001 - delivery must never raise
-                errors.append(f"ntfy {target.url}/{target.topic}: {exc}")
-        if not notification.ok and self._cfg.email is not None:
-            try:
-                self._send_email(self._cfg.email, notification)
-            except Exception as exc:  # noqa: BLE001
-                errors.append(f"email via {self._cfg.email.smtp_host}: {exc}")
+            self._attempt(
+                errors,
+                "ntfy",
+                f"{target.url.rstrip('/')}/{target.topic}",
+                lambda target=target: self._post_ntfy(target, notification),
+            )
+        email = self._cfg.email
+        if not notification.ok and email is not None:
+            self._attempt(
+                errors, "email", email.smtp_host, lambda: self._send_email(email, notification)
+            )
         if self._cfg.ping_url:
-            try:
-                self._ping(self._cfg.ping_url, notification.ok)
-            except Exception as exc:  # noqa: BLE001
-                errors.append(f"ping {self._cfg.ping_url}: {exc}")
+            self._attempt(
+                errors,
+                "ping",
+                self._cfg.ping_url,
+                lambda: self._ping(self._cfg.ping_url, notification.ok),
+            )
         return errors
+
+    @staticmethod
+    def _attempt(
+        errors: list[NotificationError], channel: str, target: str, deliver: Callable[[], None]
+    ) -> None:
+        """Run one delivery, converting any failure into a collected error."""
+        try:
+            deliver()
+        except Exception as exc:  # noqa: BLE001 - delivery must never raise
+            errors.append(NotificationError(channel, target, exc))
 
     def _post_ntfy(self, target: NtfyTarget, notification: Notification) -> None:
         headers = {
