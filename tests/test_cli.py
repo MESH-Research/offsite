@@ -102,3 +102,37 @@ class TestVersion:
         code, _ = run_cli(["--version"])
         assert code == 0
         assert __version__ in capsys.readouterr().out
+
+
+class TestEnvFile:
+    def env_file(self, tmp_path, **values):
+        path = tmp_path / "offsite.env"
+        path.write_text("".join(f"{k}={v}\n" for k, v in values.items()))
+        return path
+
+    def test_env_file_named_by_env_var_is_loaded(self, tmp_path):
+        path = self.env_file(tmp_path, RESTIC_REPOSITORY="local:/from/file", RESTIC_PASSWORD="pw")
+        handler = RecordingHandler()
+        with mock.patch.dict(os.environ, {"ENV_FILE": str(path)}, clear=True):
+            code = main(["verify"], handlers={"verify": handler}, dotenv=True)
+        assert code == 0
+        ((cfg, _),) = handler.calls
+        assert cfg.primary.repository == "local:/from/file"
+
+    def test_real_environment_overrides_env_file(self, tmp_path):
+        path = self.env_file(tmp_path, RESTIC_REPOSITORY="local:/from/file", RESTIC_PASSWORD="from-file")
+        handler = RecordingHandler()
+        env = {"ENV_FILE": str(path), "RESTIC_PASSWORD": "from-env"}
+        with mock.patch.dict(os.environ, env, clear=True):
+            main(["verify"], handlers={"verify": handler}, dotenv=True)
+        ((cfg, _),) = handler.calls
+        assert cfg.primary.password == "from-env"
+
+    def test_missing_env_file_exits_2_naming_variable(self, tmp_path, capsys):
+        handler = RecordingHandler()
+        env = {"ENV_FILE": str(tmp_path / "nope.env"), **VALID_ENV}
+        with mock.patch.dict(os.environ, env, clear=True):
+            code = main(["verify"], handlers={"verify": handler}, dotenv=True)
+        assert code == 2
+        assert handler.calls == []
+        assert "ENV_FILE" in capsys.readouterr().err

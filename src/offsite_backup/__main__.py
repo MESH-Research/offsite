@@ -7,8 +7,10 @@ mapping without running real operations.
 
 from __future__ import annotations
 
+import os
 import sys
 from collections.abc import Callable, Mapping, Sequence
+from pathlib import Path
 from types import SimpleNamespace
 
 import click
@@ -38,16 +40,35 @@ DEFAULT_HANDLERS: dict[str, Handler] = {
 }
 
 
+def _load_dotenv() -> Env:
+    """Return an `Env` with a ``.env`` file loaded; real environment wins.
+
+    environs keeps file values inside the `Env` instance (not ``os.environ``),
+    so the same instance must be handed to `load_config`. ``ENV_FILE`` names
+    the file explicitly and must exist — a configured but missing file is an
+    error, not a silent no-op. Without it, environs' default search runs,
+    which starts from this package's own directory and is therefore only
+    useful for local development from a source checkout.
+    """
+    env = Env()
+    path = os.environ.get("ENV_FILE")
+    if path:
+        if not Path(path).is_file():
+            raise ConfigError(f"ENV_FILE points to a missing file: {path}")
+        env.read_env(path, recurse=False)
+    else:
+        env.read_env()
+    return env
+
+
 def _dispatch(ctx: click.Context, command: str, **params: object) -> int:
     """Load configuration and hand off to the handler registered for `command`.
 
     Runs after Click has fully parsed the command, so usage errors never
     require a valid configuration.
     """
-    if ctx.obj["dotenv"]:
-        Env().read_env()
     try:
-        cfg = load_config()
+        cfg = load_config(_load_dotenv() if ctx.obj["dotenv"] else None)
     except ConfigError as exc:
         click.echo(f"configuration error: {exc}", err=True)
         return 2

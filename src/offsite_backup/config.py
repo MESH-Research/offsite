@@ -275,13 +275,16 @@ def _load_email(env: Env) -> EmailConfig | None:
     )
 
 
-def load_config() -> Config:
+def load_config(env: Env | None = None) -> Config:
     """Parse a full `Config` from the process environment.
 
-    Raises `ConfigError` naming the offending variable when a required value
-    is missing or invalid.
+    `env` may be a pre-built environs `Env` — typically one that has already
+    read a ``.env`` file (environs keeps such values inside the instance
+    rather than in ``os.environ``). Defaults to a fresh `Env` reading only the
+    process environment. Raises `ConfigError` naming the offending variable
+    when a required value is missing or invalid.
     """
-    env = Env()
+    env = env if env is not None else Env()
     try:
         primary = _load_primary(env)
         db_sources = _load_db_sources(env)

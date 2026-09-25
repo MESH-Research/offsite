@@ -50,6 +50,7 @@ variables locally — set `AWS_REGION` if no default region is configured).
 | `ECS_CLUSTERS` | *(discover all)* | Comma-separated ECS clusters whose task definitions/services are exported. |
 | `EFS_MOUNT_PATH` | `/mnt/efs` | Where the EFS volume is mounted (read-only) inside the task. |
 | `EMAIL_TO` | *(empty — email disabled)* | Comma-separated recipients for error mail. |
+| `ENV_FILE` | *(unset — environs' default search)* | Path to a `.env` file to load before parsing; must exist if set. Read from the real environment only (it can't come from the file it names); existing environment values are never overridden. |
 | `KEEP_DAILY` | `0` *(disabled)* | Daily checkpoints for `restic forget`. Supported but deliberately unused; `0` omits the flag. |
 | `KEEP_MONTHLY` | `6` | Month-end checkpoints retained (see [FAQ](FAQ.md) for the exact keep-set). |
 | `KEEP_WEEKLY` | `4` | Week-end checkpoints retained. |

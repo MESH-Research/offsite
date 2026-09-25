@@ -378,3 +378,17 @@ class TestNotify:
         del env[missing]
         with pytest.raises(ConfigError, match=missing):
             load(env)
+
+
+class TestProvidedEnv:
+    def test_values_loaded_into_a_provided_env_are_used(self, tmp_path):
+        from environs import Env
+
+        dotenv = tmp_path / "offsite.env"
+        dotenv.write_text("RESTIC_REPOSITORY=local:/from/file\nRESTIC_PASSWORD=file-pw\n")
+        env = Env()
+        env.read_env(dotenv, recurse=False)
+        with mock.patch.dict(os.environ, {}, clear=True):
+            cfg = load_config(env)
+        assert cfg.primary.repository == "local:/from/file"
+        assert cfg.primary.password == "file-pw"
