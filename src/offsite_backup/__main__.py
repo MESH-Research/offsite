@@ -7,18 +7,27 @@ mapping without running real operations.
 
 from __future__ import annotations
 
+import logging
 import os
 import sys
+import tempfile
 from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 from types import SimpleNamespace
 
+import boto3
 import click
 from environs import Env
 
 from offsite_backup.__version__ import __version__
+from offsite_backup.components.base import Component
+from offsite_backup.components.ecs import EcsComponent
 from offsite_backup.config import Config, load_config
 from offsite_backup.errors import ConfigError
+from offsite_backup.notify import Notifier
+from offsite_backup.orchestrator import run_backup
+from offsite_backup.restic import Restic
+from offsite_backup.ssh import prepare_ssh_home
 
 Handler = Callable[[Config, SimpleNamespace], int]
 
@@ -29,9 +38,33 @@ def _not_implemented(cfg: Config, args: SimpleNamespace) -> int:
     raise NotImplementedError(f"command {args.command!r} is not implemented yet")
 
 
-#: Composition root: later build phases replace these stubs with real handlers.
+def _build_components(cfg: Config, workdir: Path) -> list[Component]:
+    """Compose the components implemented so far; later build steps add more."""
+    return [EcsComponent(cfg.ecs, boto3.client("ecs"), workdir / "ecs")]
+
+
+def _run_backup(cfg: Config, args: SimpleNamespace) -> int:
+    """Handle ``backup``: compose the real collaborators and run the orchestrator."""
+    with tempfile.TemporaryDirectory(prefix="offsite-backup-") as tmp:
+        workdir = Path(tmp)
+        ssh_home = prepare_ssh_home(cfg.repos, workdir / "ssh")
+        restics = [
+            Restic(repo, host=cfg.restic_host, cache_dir=cfg.cache_dir, ssh_home=ssh_home)
+            for repo in cfg.repos
+        ]
+        report = run_backup(
+            cfg,
+            restics=restics,
+            components=_build_components(cfg, workdir),
+            notifier=Notifier(cfg.notify),
+            targets=list(args.targets),
+        )
+    return report.exit_code()
+
+
+#: Composition root: later build phases replace the remaining stubs with real handlers.
 DEFAULT_HANDLERS: dict[str, Handler] = {
-    "backup": _not_implemented,
+    "backup": _run_backup,
     "verify": _not_implemented,
     "verify-deep": _not_implemented,
     "prune": _not_implemented,
@@ -69,11 +102,11 @@ def _dispatch(ctx: click.Context, command: str, **params: object) -> int:
     """
     try:
         cfg = load_config(_load_dotenv() if ctx.obj["dotenv"] else None)
+        handler = ctx.obj["handlers"][command]
+        return handler(cfg, SimpleNamespace(command=command, **params))
     except ConfigError as exc:
         click.echo(f"configuration error: {exc}", err=True)
         return 2
-    handler = ctx.obj["handlers"][command]
-    return handler(cfg, SimpleNamespace(command=command, **params))
 
 
 @click.group(help="Portable offsite backups of AWS resources via restic.")
@@ -142,6 +175,9 @@ def main(
     the composition root). `dotenv` controls whether a local ``.env`` file is
     read into the environment first (disabled in tests).
     """
+    logging.basicConfig(
+        level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s"
+    )
     obj = {"handlers": handlers or DEFAULT_HANDLERS, "dotenv": dotenv}
     try:
         result = cli.main(

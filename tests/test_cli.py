@@ -136,3 +136,17 @@ class TestEnvFile:
         assert code == 2
         assert handler.calls == []
         assert "ENV_FILE" in capsys.readouterr().err
+
+
+class TestHandlerErrors:
+    def test_config_error_from_handler_exits_2_with_message(self, capsys):
+        from offsite_backup.errors import ConfigError
+
+        def handler(cfg, args):
+            raise ConfigError("unknown backup target 'floppy'")
+
+        handlers = dict.fromkeys([*ALL_COMMANDS, "restore"], handler)
+        with mock.patch.dict(os.environ, VALID_ENV, clear=True):
+            code = main(["backup", "floppy"], handlers=handlers, dotenv=False)
+        assert code == 2
+        assert "floppy" in capsys.readouterr().err
