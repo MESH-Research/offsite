@@ -1,6 +1,4 @@
-import base64
-from contextlib import nullcontext
-
+import httpx2
 import pytest
 
 from offsite_backup.config import EmailConfig, NotifyConfig, NtfyTarget
@@ -9,21 +7,41 @@ from offsite_backup.notify import Notification, Notifier, notification_for
 from offsite_backup.results import ComponentResult, RunReport
 
 
-class FakeOpener:
-    """Records urllib requests; raises for URLs containing any `failing` fragment."""
+class HttpRecorder:
+    """httpx MockTransport handler recording requests and scripting responses.
 
-    def __init__(self, failing=()):
+    URLs containing any `failing` fragment raise a connection error; `status`
+    overrides the response status; `ntfy_body` overrides the JSON ntfy returns.
+    """
+
+    def __init__(self, failing=(), status=200, ntfy_body=None):
         self.requests = []
         self.failing = failing
+        self.status = status
+        self.ntfy_body = ntfy_body
 
-    def __call__(self, request, timeout=None):
+    def handle(self, request):
         self.requests.append(request)
-        if any(fragment in request.full_url for fragment in self.failing):
-            raise OSError("connection refused")
-        return nullcontext()
+        if any(fragment in str(request.url) for fragment in self.failing):
+            raise httpx2.ConnectError("connection refused", request=request)
+        if request.method == "POST":
+            body = self.ntfy_body
+            if body is None:
+                body = {
+                    "id": "abc123",
+                    "time": 1_700_000_000,
+                    "event": "message",
+                    "topic": str(request.url).rsplit("/", 1)[-1],
+                    "message": request.content.decode(),
+                }
+            return httpx2.Response(self.status, json=body)
+        return httpx2.Response(self.status, text="OK")
+
+    def client(self):
+        return httpx2.Client(transport=httpx2.MockTransport(self.handle))
 
     def to(self, fragment):
-        return [r for r in self.requests if fragment in r.full_url]
+        return [r for r in self.requests if fragment in str(r.url)]
 
 
 class FakeSmtp:
@@ -79,52 +97,64 @@ GOOD = Notification(title="backup OK", body="all fine", ok=True)
 BAD = Notification(title="backup FAILED", body="db: replica timed out", ok=False)
 
 
-def notifier(cfg, opener=None, smtp=None):
-    return Notifier(
-        cfg, opener=opener or FakeOpener(), smtp_factory=smtp or FakeSmtpFactory()
-    )
+def notifier(cfg, http=None, smtp=None):
+    http = http or HttpRecorder()
+    return Notifier(cfg, http=http.client(), smtp_factory=smtp or FakeSmtpFactory())
 
 
 class TestNtfy:
     def test_success_posted_to_every_target_with_body(self):
-        opener = FakeOpener()
-        errors = notifier(NotifyConfig(ntfy=(NTFY_A, NTFY_B)), opener).notify(GOOD)
+        http = HttpRecorder()
+        errors = notifier(NotifyConfig(ntfy=(NTFY_A, NTFY_B)), http).notify(GOOD)
         assert errors == []
-        (a,) = opener.to("ntfy.example.org/kc-backups")
-        (b,) = opener.to("ntfy.sh/oncall")
+        (a,) = http.to("ntfy.example.org/kc-backups")
+        (b,) = http.to("ntfy.sh/oncall")
         for request in (a, b):
-            assert request.get_method() == "POST"
-            assert request.data == b"all fine"
-            assert request.get_header("Title") == "backup OK"
+            assert request.method == "POST"
+            assert request.content == b"all fine"
+            assert request.headers["Title"] == "backup OK"
 
     def test_failure_uses_high_priority_and_success_does_not(self):
-        opener = FakeOpener()
-        n = notifier(NotifyConfig(ntfy=(NTFY_B,)), opener)
+        http = HttpRecorder()
+        n = notifier(NotifyConfig(ntfy=(NTFY_B,)), http)
         n.notify(GOOD)
         n.notify(BAD)
-        good, bad = opener.to("oncall")
-        assert bad.get_header("Priority") == "high"
-        assert good.get_header("Priority") != "high"
+        good, bad = http.to("oncall")
+        assert bad.headers["Priority"] == "high"
+        assert good.headers["Priority"] != "high"
 
     def test_basic_auth_only_when_credentials_configured(self):
-        opener = FakeOpener()
-        notifier(NotifyConfig(ntfy=(NTFY_A, NTFY_B)), opener).notify(GOOD)
-        (authed,) = opener.to("kc-backups")
-        (anonymous,) = opener.to("oncall")
-        expected = "Basic " + base64.b64encode(b"u:p").decode()
-        assert authed.get_header("Authorization") == expected
-        assert anonymous.get_header("Authorization") is None
+        http = HttpRecorder()
+        notifier(NotifyConfig(ntfy=(NTFY_A, NTFY_B)), http).notify(GOOD)
+        (authed,) = http.to("kc-backups")
+        (anonymous,) = http.to("oncall")
+        assert authed.headers["Authorization"] == "Basic dTpw"  # base64("u:p")
+        assert "Authorization" not in anonymous.headers
 
     def test_one_failing_target_does_not_block_others(self):
-        opener = FakeOpener(failing=("ntfy.example.org",))
-        errors = notifier(NotifyConfig(ntfy=(NTFY_A, NTFY_B)), opener).notify(GOOD)
-        assert len(opener.to("oncall")) == 1
+        http = HttpRecorder(failing=("ntfy.example.org",))
+        errors = notifier(NotifyConfig(ntfy=(NTFY_A, NTFY_B)), http).notify(GOOD)
+        assert len(http.to("oncall")) == 1
         (error,) = errors
         assert isinstance(error, NotificationError)
         assert error.channel == "ntfy"
         assert "kc-backups" in error.target
-        assert isinstance(error.cause, OSError)
+        assert isinstance(error.cause, httpx2.HTTPError)
         assert "kc-backups" in str(error)
+
+    def test_non_2xx_response_is_a_delivery_error(self):
+        http = HttpRecorder(status=503)
+        errors = notifier(NotifyConfig(ntfy=(NTFY_B,)), http).notify(GOOD)
+        (error,) = errors
+        assert error.channel == "ntfy"
+        assert "503" in str(error)
+
+    def test_malformed_publish_response_is_a_delivery_error(self):
+        http = HttpRecorder(ntfy_body={"unexpected": "shape"})
+        errors = notifier(NotifyConfig(ntfy=(NTFY_B,)), http).notify(GOOD)
+        (error,) = errors
+        assert error.channel == "ntfy"
+        assert "oncall" in error.target
 
 
 class TestEmail:
@@ -175,16 +205,17 @@ class TestEmail:
 
 class TestPing:
     def test_success_hits_url_and_failure_hits_fail_suffix(self):
-        opener = FakeOpener()
-        n = notifier(NotifyConfig(ping_url="https://hc.example.org/ping/abc/"), opener)
+        http = HttpRecorder()
+        n = notifier(NotifyConfig(ping_url="https://hc.example.org/ping/abc/"), http)
         n.notify(GOOD)
         n.notify(BAD)
-        urls = [r.full_url for r in opener.requests]
+        urls = [str(r.url) for r in http.requests]
         assert urls == ["https://hc.example.org/ping/abc", "https://hc.example.org/ping/abc/fail"]
+        assert all(r.method == "GET" for r in http.requests)
 
     def test_ping_failure_is_reported_not_raised(self):
-        opener = FakeOpener(failing=("hc.example.org",))
-        errors = notifier(NotifyConfig(ping_url="https://hc.example.org/ping/abc"), opener).notify(
+        http = HttpRecorder(failing=("hc.example.org",))
+        errors = notifier(NotifyConfig(ping_url="https://hc.example.org/ping/abc"), http).notify(
             GOOD
         )
         (error,) = errors
@@ -192,12 +223,20 @@ class TestPing:
         assert error.channel == "ping"
         assert error.target == "https://hc.example.org/ping/abc"
 
+    def test_ping_non_2xx_is_a_delivery_error(self):
+        http = HttpRecorder(status=404)
+        errors = notifier(NotifyConfig(ping_url="https://hc.example.org/ping/abc"), http).notify(
+            GOOD
+        )
+        (error,) = errors
+        assert error.channel == "ping"
+
 
 class TestNothingConfigured:
     def test_no_channels_means_no_traffic_and_no_errors(self):
-        opener, smtp = FakeOpener(), FakeSmtpFactory()
-        assert notifier(NotifyConfig(), opener, smtp).notify(BAD) == []
-        assert opener.requests == []
+        http, smtp = HttpRecorder(), FakeSmtpFactory()
+        assert notifier(NotifyConfig(), http, smtp).notify(BAD) == []
+        assert http.requests == []
         assert smtp.sessions == []
 
 

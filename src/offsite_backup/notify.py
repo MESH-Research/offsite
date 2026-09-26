@@ -1,18 +1,21 @@
 """Outbound notifications: ntfy targets, error email, and the dead-man ping.
 
-Every transport is injected (an HTTP opener and an SMTP factory) so tests use
-fakes. Delivery problems are collected and returned, never raised: a broken
-notification channel must not fail a good backup.
+HTTP goes through an injected ``httpx2.Client`` (tests use ``MockTransport``)
+and email through an injected SMTP factory. Every API response is validated
+with a Pydantic model. Delivery problems are collected and returned as
+`NotificationError` values, never raised: a broken notification channel must
+not fail a good backup.
 """
 
 from __future__ import annotations
 
-import base64
 import smtplib
-import urllib.request
 from collections.abc import Callable
 from dataclasses import dataclass
 from email.message import EmailMessage
+
+import httpx2
+from pydantic import BaseModel, ConfigDict
 
 from offsite_backup.config import EmailConfig, NotifyConfig, NtfyTarget
 from offsite_backup.errors import NotificationError
@@ -20,8 +23,18 @@ from offsite_backup.results import RunReport
 
 TIMEOUT_SECONDS = 15
 
-Opener = Callable[..., object]
 SmtpFactory = Callable[..., smtplib.SMTP]
+
+
+class NtfyPublishResponse(BaseModel):
+    """The message object ntfy returns when a publish succeeds."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    id: str
+    time: int
+    event: str
+    topic: str
 
 
 @dataclass(frozen=True)
@@ -61,12 +74,17 @@ class Notifier:
         self,
         cfg: NotifyConfig,
         *,
-        opener: Opener = urllib.request.urlopen,
+        http: httpx2.Client | None = None,
         smtp_factory: SmtpFactory = smtplib.SMTP,
     ) -> None:
-        """Bind to the notification config; transports default to the stdlib."""
+        """Bind to the notification config.
+
+        `http` defaults to a real client with a short timeout; tests pass one
+        built on ``httpx2.MockTransport``. `smtp_factory` defaults to
+        ``smtplib.SMTP``.
+        """
         self._cfg = cfg
-        self._opener = opener
+        self._http = http if http is not None else httpx2.Client(timeout=TIMEOUT_SECONDS)
         self._smtp_factory = smtp_factory
 
     def notify(self, notification: Notification) -> list[NotificationError]:
@@ -115,17 +133,15 @@ class Notifier:
             "Priority": "default" if notification.ok else "high",
             "Tags": "white_check_mark" if notification.ok else "rotating_light",
         }
-        if target.user:
-            credentials = f"{target.user}:{target.password}".encode()
-            headers["Authorization"] = "Basic " + base64.b64encode(credentials).decode()
-        request = urllib.request.Request(
+        auth = httpx2.BasicAuth(target.user, target.password) if target.user else None
+        response = self._http.post(
             f"{target.url.rstrip('/')}/{target.topic}",
-            data=notification.body.encode(),
+            content=notification.body.encode(),
             headers=headers,
-            method="POST",
+            auth=auth,
         )
-        with self._opener(request, timeout=TIMEOUT_SECONDS):
-            pass
+        response.raise_for_status()
+        NtfyPublishResponse.model_validate(response.json())
 
     def _send_email(self, email: EmailConfig, notification: Notification) -> None:
         message = EmailMessage()
@@ -140,6 +156,4 @@ class Notifier:
             smtp.send_message(message)
 
     def _ping(self, url: str, ok: bool) -> None:
-        target = url.rstrip("/") + ("" if ok else "/fail")
-        with self._opener(urllib.request.Request(target), timeout=TIMEOUT_SECONDS):
-            pass
+        self._http.get(url.rstrip("/") + ("" if ok else "/fail")).raise_for_status()
