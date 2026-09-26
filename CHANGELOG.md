@@ -1,3 +1,13 @@
+## 0.4.0 (2026-09-24)
+
+### Feat
+
+- **cli**: add command skeleton with dispatch and exit-code mapping
+
+### Refactor
+
+- **cli**: switch argument parsing from argparse to Click
+
 ## 0.3.0 (2026-09-24)
 
 ### Feat
