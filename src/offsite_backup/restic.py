@@ -2,42 +2,52 @@
 
 One `Restic` instance per repository; every method builds an argv list and
 delegates to the injected `Runner`. Repository location and password travel
-via the child environment (never argv); JSON output parsing lives here and
-nowhere else.
+via the child environment (never argv). restic's JSON output is parsed and
+validated with Pydantic models here and nowhere else.
 """
 
 from __future__ import annotations
 
-import json
-import re
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
+from typing import Literal
+
+from pydantic import BaseModel, ConfigDict, TypeAdapter, ValidationError, field_validator
 
 from offsite_backup.config import RepoConfig
 from offsite_backup.errors import CommandError, ConfigError
 from offsite_backup.proc import Runner, run
 
-# restic emits RFC3339 timestamps with nanosecond precision; fromisoformat
-# accepts at most microseconds, so surplus fractional digits are trimmed.
-_EXCESS_FRACTION = re.compile(r"\.(\d{6})\d+")
 
-
-def _parse_time(value: str) -> datetime:
-    return datetime.fromisoformat(_EXCESS_FRACTION.sub(r".\1", value))
-
-
-@dataclass(frozen=True)
-class Snapshot:
+class Snapshot(BaseModel):
     """One snapshot record as reported by ``restic snapshots --json``."""
+
+    model_config = ConfigDict(frozen=True, extra="ignore")
 
     id: str
     short_id: str
-    time: datetime
-    tags: tuple[str, ...]
-    paths: tuple[str, ...]
-    hostname: str
+    time: datetime  # restic's nanosecond RFC3339 stamps parse (truncated to µs)
+    tags: tuple[str, ...] = ()
+    paths: tuple[str, ...] = ()
+    hostname: str = ""
+
+    @field_validator("tags", "paths", mode="before")
+    @classmethod
+    def _none_to_empty(cls, value: object) -> object:
+        return () if value is None else value
+
+
+_SNAPSHOT_LIST = TypeAdapter(list[Snapshot])
+
+
+class BackupSummary(BaseModel):
+    """The final ``summary`` line of ``restic backup --json``."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    message_type: Literal["summary"]
+    snapshot_id: str
 
 
 class Restic:
@@ -101,11 +111,9 @@ class Restic:
         result = self._run(cmd, extra_env=extra_env)
         for line in result.stdout.splitlines():
             try:
-                message = json.loads(line)
-            except json.JSONDecodeError:
-                continue
-            if message.get("message_type") == "summary":
-                return message["snapshot_id"]
+                return BackupSummary.model_validate_json(line).snapshot_id
+            except ValidationError:
+                continue  # progress/status lines, or non-JSON noise
         raise CommandError(
             ["restic", *cmd], result.returncode, "restic backup produced no summary line"
         )
@@ -158,17 +166,12 @@ class Restic:
         if latest is not None:
             cmd += ["--latest", str(latest)]
         result = self._run(cmd)
-        return [
-            Snapshot(
-                id=record["id"],
-                short_id=record["short_id"],
-                time=_parse_time(record["time"]),
-                tags=tuple(record.get("tags") or ()),
-                paths=tuple(record.get("paths") or ()),
-                hostname=record.get("hostname", ""),
-            )
-            for record in json.loads(result.stdout or "[]")
-        ]
+        try:
+            return _SNAPSHOT_LIST.validate_json(result.stdout or "[]")
+        except ValidationError as exc:
+            raise CommandError(
+                ["restic", *cmd], result.returncode, f"unparseable snapshots output: {exc}"
+            ) from exc
 
     def forget(
         self,

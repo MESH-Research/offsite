@@ -241,3 +241,20 @@ class TestMaintenance:
         copy_call = next(c for c in fake_runner.calls if "copy" in c.cmd)
         assert copy_call.env["RESTIC_FROM_PASSWORD"] == "src-pw"
         assert "src-pw" not in cmd
+
+
+class TestOutputValidation:
+    def test_malformed_snapshots_output_raises_command_error(self, fake_runner):
+        fake_runner.on("snapshots", stdout='[{"nope": 1}]')
+        with pytest.raises(CommandError, match="snapshots"):
+            restic(fake_runner).snapshots()
+
+    def test_null_tags_and_paths_become_empty_tuples(self, fake_runner):
+        fake_runner.on(
+            "snapshots",
+            stdout='[{"time":"2026-09-23T03:00:00Z","hostname":"h","id":"abc","short_id":"abc",'
+            '"tags":null,"paths":null}]',
+        )
+        (snap,) = restic(fake_runner).snapshots()
+        assert snap.tags == ()
+        assert snap.paths == ()
