@@ -66,7 +66,7 @@ class TestDefaults:
         assert cfg.s3.buckets is None
         assert cfg.s3.exclude_buckets == ()
         assert cfg.s3.staging_budget_bytes == 170 * 2**30
-        assert cfg.s3.staging_dir == Path("/mnt/staging")
+        assert cfg.staging_dir == Path("/mnt/staging")
         assert cfg.efs.mount_path == Path("/mnt/efs")
         assert cfg.ecs.clusters is None
         assert cfg.notify.ntfy == ()
@@ -199,7 +199,7 @@ class TestS3:
         assert cfg.s3.buckets == ("assets", "uploads")
         assert cfg.s3.exclude_buckets == ("scratch",)
         assert cfg.s3.staging_budget_bytes == 1_000_000
-        assert cfg.s3.staging_dir == Path("/scratch")
+        assert cfg.staging_dir == Path("/scratch")
 
     def test_unset_buckets_means_discover(self):
         assert load(minimal_env()).s3.buckets is None

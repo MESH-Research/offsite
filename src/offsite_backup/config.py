@@ -74,7 +74,6 @@ class S3Config:
     buckets: tuple[str, ...] | None  # None = discover all, minus excludes
     exclude_buckets: tuple[str, ...]
     staging_budget_bytes: int
-    staging_dir: Path
 
 
 @dataclass(frozen=True)
@@ -130,6 +129,7 @@ class Config:
     mirrors: tuple[RepoConfig, ...]
     restic_host: str
     cache_dir: Path | None
+    staging_dir: Path  # stable scratch root; snapshot paths are recorded under it
     keep_daily: int
     keep_weekly: int
     keep_monthly: int
@@ -293,6 +293,7 @@ def load_config(env: Env | None = None) -> Config:
             mirrors=_load_mirrors(env, primary),
             restic_host=env.str("RESTIC_HOST", DEFAULT_RESTIC_HOST),
             cache_dir=env.path("RESTIC_CACHE_DIR", None),
+            staging_dir=env.path("STAGING_DIR", DEFAULT_STAGING_DIR),
             keep_daily=env.int("KEEP_DAILY", DEFAULT_KEEP_DAILY),
             keep_weekly=env.int("KEEP_WEEKLY", DEFAULT_KEEP_WEEKLY),
             keep_monthly=env.int("KEEP_MONTHLY", DEFAULT_KEEP_MONTHLY),
@@ -311,7 +312,6 @@ def load_config(env: Env | None = None) -> Config:
                 staging_budget_bytes=env.int(
                     "STAGING_BUDGET_BYTES", DEFAULT_STAGING_BUDGET_BYTES
                 ),
-                staging_dir=env.path("STAGING_DIR", DEFAULT_STAGING_DIR),
             ),
             efs=EfsConfig(mount_path=env.path("EFS_MOUNT_PATH", DEFAULT_EFS_MOUNT_PATH)),
             ecs=EcsConfig(clusters=_optional_names(env, "ECS_CLUSTERS")),

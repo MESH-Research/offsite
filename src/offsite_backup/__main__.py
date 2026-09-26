@@ -38,9 +38,14 @@ def _not_implemented(cfg: Config, args: SimpleNamespace) -> int:
     raise NotImplementedError(f"command {args.command!r} is not implemented yet")
 
 
-def _build_components(cfg: Config, workdir: Path) -> list[Component]:
-    """Compose the components implemented so far; later build steps add more."""
-    return [EcsComponent(cfg.ecs, boto3.client("ecs"), workdir / "ecs")]
+def _build_components(cfg: Config) -> list[Component]:
+    """Compose the components implemented so far; later build steps add more.
+
+    Scratch space lives under the stable ``STAGING_DIR`` (never a random temp
+    directory): restic records absolute paths in snapshots, and a stable path
+    is what lets it find the parent snapshot and skip unchanged files.
+    """
+    return [EcsComponent(cfg.ecs, boto3.client("ecs"), cfg.staging_dir / "ecs")]
 
 
 def _run_backup(cfg: Config, args: SimpleNamespace) -> int:
@@ -55,7 +60,7 @@ def _run_backup(cfg: Config, args: SimpleNamespace) -> int:
         report = run_backup(
             cfg,
             restics=restics,
-            components=_build_components(cfg, workdir),
+            components=_build_components(cfg),
             notifier=Notifier(cfg.notify),
             targets=list(args.targets),
         )

@@ -68,4 +68,4 @@ variables locally — set `AWS_REGION` if no default region is configured).
 | `SMTP_USER` | *(no auth)* | SMTP user. |
 | `SSH_PORT` | `23` | SSH port for the primary repository host (Hetzner Storage Boxes use 23). A port embedded in an `sftp://` URL wins. |
 | `STAGING_BUDGET_BYTES` | `182536110080` *(170 GiB)* | Upper bound for S3 staging; must fit the task's ephemeral storage. Buckets above it are batched by prefix. |
-| `STAGING_DIR` | `/mnt/staging` | Staging area for S3 bucket syncs. |
+| `STAGING_DIR` | `/mnt/staging` | Stable scratch root for every component (S3 bucket staging, ECS export). Snapshot paths are recorded under it, so keep it constant between runs. |
