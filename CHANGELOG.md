@@ -1,3 +1,14 @@
+## 0.5.0 (2026-09-26)
+
+### Feat
+
+- **cli**: load the .env file named by ENV_FILE into the config environment
+- **notify**: add ntfy, email and dead-man ping notifications
+
+### Refactor
+
+- **notify**: report delivery failures as NotificationError values
+
 ## 0.4.0 (2026-09-24)
 
 ### Feat

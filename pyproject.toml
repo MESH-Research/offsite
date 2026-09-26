@@ -1,6 +1,6 @@
 [project]
 name = "offsite-backup"
-version = "0.4.0"
+version = "0.5.0"
 description = "Portable offsite backups of Knowledge Commons AWS resources (RDS, EFS, S3, ECS) to Hetzner Storage Boxes via restic"
 readme = "README.md"
 requires-python = ">=3.12"
@@ -46,7 +46,7 @@ convention = "pep257"
 "tests/*" = ["D"]
 
 [tool.commitizen]
-version = "0.4.0"
+version = "0.5.0"
 version_files = [
     "src/offsite_backup/__version__.py",
     "pyproject.toml:version",
