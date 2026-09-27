@@ -19,6 +19,7 @@ dev = [
     "pytest-cov>=5",
     "moto[rds,s3,ecs,cloudwatch]>=5",
     "ruff>=0.6",
+    "boto3-stubs~=1.43.100",
 ]
 
 [build-system]
