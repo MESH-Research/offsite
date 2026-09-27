@@ -35,6 +35,7 @@ class Snapshot(BaseModel):
     @field_validator("tags", "paths", mode="before")
     @classmethod
     def _none_to_empty(cls, value: object) -> object:
+        """Convert a JSON null for tags/paths into an empty tuple."""
         return () if value is None else value
 
 
@@ -75,6 +76,7 @@ class Restic:
         self._runner = runner
 
     def _env(self, extra: Mapping[str, str] | None = None) -> dict[str, str]:
+        """Build the child environment: repository, password, cache dir, HOME, plus `extra`."""
         env = {
             "RESTIC_REPOSITORY": self.repo.repository,
             "RESTIC_PASSWORD": self.repo.password,
@@ -94,6 +96,7 @@ class Restic:
         check: bool = True,
         extra_env: Mapping[str, str] | None = None,
     ):
+        """Run a restic subcommand with the common flags and environment."""
         return self._runner(
             ["restic", "--json", *args], env=self._env(extra_env), check=check
         )
@@ -104,6 +107,7 @@ class Restic:
         tags: Sequence[str],
         extra_env: Mapping[str, str] | None = None,
     ) -> str:
+        """Run `restic backup` with host and tags; return the snapshot id from the summary line."""
         cmd = ["backup", "--host", self.host]
         for tag in tags:
             cmd += ["--tag", tag]

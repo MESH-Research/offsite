@@ -123,6 +123,7 @@ class EcsComponent:
             shutil.rmtree(export, ignore_errors=True)
 
     def _export_task_definitions(self, directory: Path) -> None:
+        """Write every ACTIVE task definition as `<family>.<revision>.json` under `directory`."""
         directory.mkdir()
         pages = self._ecs.get_paginator("list_task_definitions").paginate(status="ACTIVE")
         for page in pages:
@@ -133,12 +134,14 @@ class EcsComponent:
                 target.write_text(definition.model_dump_json(indent=2))
 
     def _export_clusters(self, directory: Path) -> None:
+        """Write each selected cluster, with its services, as `<name>.json` under `directory`."""
         directory.mkdir()
         for cluster in self._describe_clusters(self._cluster_identifiers()):
             export = ClusterExport(cluster=cluster, services=self._services_of(cluster))
             (directory / f"{cluster.clusterName}.json").write_text(export.model_dump_json(indent=2))
 
     def _cluster_identifiers(self) -> list[str]:
+        """Return the configured cluster names, or every cluster ARN when none are configured."""
         if self._cfg.clusters is not None:
             return list(self._cfg.clusters)
         arns: list[str] = []
@@ -147,6 +150,7 @@ class EcsComponent:
         return arns
 
     def _describe_clusters(self, identifiers: Sequence[str]) -> list[Cluster]:
+        """Describe clusters in API-sized batches, validating each response."""
         clusters: list[Cluster] = []
         for batch in _chunks(identifiers, DESCRIBE_CLUSTERS_BATCH):
             response = self._ecs.describe_clusters(clusters=batch)
@@ -154,6 +158,7 @@ class EcsComponent:
         return clusters
 
     def _services_of(self, cluster: Cluster) -> list[Service]:
+        """List and describe every service in `cluster`, in API-sized batches."""
         arns: list[str] = []
         for page in self._ecs.get_paginator("list_services").paginate(cluster=cluster.clusterArn):
             arns += ListServicesPage.model_validate(page).serviceArns
@@ -165,5 +170,6 @@ class EcsComponent:
 
 
 def _chunks(items: Sequence[str], size: int) -> Iterator[list[str]]:
+    """Yield `items` in consecutive lists of at most `size` elements."""
     for start in range(0, len(items), size):
         yield list(items[start : start + size])

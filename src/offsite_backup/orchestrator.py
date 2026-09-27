@@ -119,6 +119,7 @@ def run_backup(
 def _run_component(
     component: Component, primary: Restic, clock: Callable[[], float]
 ) -> ComponentResult:
+    """Run one component against the primary, timing it and turning failure into a result."""
     started = clock()
     log.info("backing up %s", component.name)
     try:
@@ -134,6 +135,7 @@ def _run_component(
 
 
 def _finish(results: list[ComponentResult], notifier: Notifier) -> RunReport:
+    """Build the report, send the notification (logging delivery failures) and return it."""
     report = RunReport(results)
     for error in notifier.notify(notification_for(OPERATION, report)):
         log.warning("notification failed: %s", error)

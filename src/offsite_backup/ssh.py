@@ -114,6 +114,7 @@ def prepare_ssh_home(repos: Sequence[RepoConfig], home: Path) -> Path:
 
 
 def _write(content: str, dest: Path, mode: int) -> Path:
+    """Write `content` to `dest` with exactly one trailing newline and the given mode."""
     dest.write_text(content.rstrip("\n") + "\n")
     dest.chmod(mode)
     return dest

@@ -35,6 +35,7 @@ RESTORE_TARGETS: tuple[str, ...] = ("db", "efs", "s3", "ecs")
 
 
 def _not_implemented(cfg: Config, args: SimpleNamespace) -> int:
+    """Raise NotImplementedError for a command that is not built yet."""
     raise NotImplementedError(f"command {args.command!r} is not implemented yet")
 
 

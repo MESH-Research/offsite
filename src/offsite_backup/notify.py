@@ -128,6 +128,7 @@ class Notifier:
             errors.append(NotificationError(channel, target, exc))
 
     def _post_ntfy(self, target: NtfyTarget, notification: Notification) -> None:
+        """POST the notification to one ntfy target and validate its acknowledgement."""
         headers = {
             "Title": notification.title,
             "Priority": "default" if notification.ok else "high",
@@ -144,6 +145,7 @@ class Notifier:
         NtfyPublishResponse.model_validate(response.json())
 
     def _send_email(self, email: EmailConfig, notification: Notification) -> None:
+        """Send the notification as one email to every configured recipient."""
         message = EmailMessage()
         message["Subject"] = notification.title
         message["From"] = email.smtp_from
@@ -156,4 +158,5 @@ class Notifier:
             smtp.send_message(message)
 
     def _ping(self, url: str, ok: bool) -> None:
+        """Hit the dead-man URL (or its `/fail` variant) and require a 2xx response."""
         self._http.get(url.rstrip("/") + ("" if ok else "/fail")).raise_for_status()

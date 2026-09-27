@@ -150,10 +150,12 @@ class Config:
 
 
 def _names(env: Env, key: str) -> tuple[str, ...]:
+    """Read a comma-separated variable as a tuple of stripped, non-empty names."""
     return tuple(item.strip() for item in env.list(key, []) if item.strip())
 
 
 def _optional_names(env: Env, key: str) -> tuple[str, ...] | None:
+    """Return the names in a comma-separated variable, or None when unset or empty."""
     return _names(env, key) or None
 
 
@@ -167,6 +169,7 @@ def _numbered_groups(pattern: re.Pattern[str], label: str) -> list[int]:
 
 
 def _require_ssh(repository: str, key: str | None, known_hosts: str | None, prefix: str) -> None:
+    """Raise `ConfigError` when an sftp repository lacks key or known-hosts material."""
     if not repository.startswith("sftp:"):
         return
     if key is None:
@@ -176,6 +179,7 @@ def _require_ssh(repository: str, key: str | None, known_hosts: str | None, pref
 
 
 def _load_primary(env: Env) -> RepoConfig:
+    """Parse the primary repository settings."""
     repo = RepoConfig(
         repository=env.str("RESTIC_REPOSITORY"),
         password=env.str("RESTIC_PASSWORD"),
@@ -188,6 +192,7 @@ def _load_primary(env: Env) -> RepoConfig:
 
 
 def _load_mirrors(env: Env, primary: RepoConfig) -> tuple[RepoConfig, ...]:
+    """Parse the numbered mirror groups, inheriting SSH material from the primary."""
     mirrors = []
     for n in _numbered_groups(_MIRROR_KEY, "RESTIC_MIRROR"):
         with env.prefixed(f"RESTIC_MIRROR_{n}_"):
@@ -209,6 +214,7 @@ def _load_mirrors(env: Env, primary: RepoConfig) -> tuple[RepoConfig, ...]:
 
 
 def _load_db_sources(env: Env) -> tuple[DbSourceConfig, ...]:
+    """Parse `DB_SOURCES` and each source's `DB_<SRC>_*` group."""
     sources = []
     for name in _names(env, "DB_SOURCES"):
         if name in RESERVED_SOURCE_NAMES:
@@ -231,6 +237,7 @@ def _load_db_sources(env: Env) -> tuple[DbSourceConfig, ...]:
 
 
 def _load_components(env: Env, db_sources: tuple[DbSourceConfig, ...]) -> tuple[str, ...]:
+    """Parse `COMPONENTS`, validating every name against builtins and DB sources."""
     components = _names(env, "COMPONENTS")
     if not components:
         return BUILTIN_COMPONENTS
@@ -242,6 +249,7 @@ def _load_components(env: Env, db_sources: tuple[DbSourceConfig, ...]) -> tuple[
 
 
 def _load_ntfy(env: Env) -> tuple[NtfyTarget, ...]:
+    """Parse the numbered `NTFY_<N>_*` groups, enforcing paired credentials."""
     targets = []
     for n in _numbered_groups(_NTFY_KEY, "NTFY"):
         with env.prefixed(f"NTFY_{n}_"):
@@ -262,6 +270,7 @@ def _load_ntfy(env: Env) -> tuple[NtfyTarget, ...]:
 
 
 def _load_email(env: Env) -> EmailConfig | None:
+    """Parse the SMTP settings; return None when `EMAIL_TO` is unset."""
     to = _names(env, "EMAIL_TO")
     if not to:
         return None
