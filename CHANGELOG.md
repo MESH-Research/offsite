@@ -1,3 +1,13 @@
+## 0.7.0 (2026-09-27)
+
+### Feat
+
+- **efs**: back up the mounted EFS volume with an empty-mount guard
+
+### Fix
+
+- **cli**: build only the selected components so non-AWS targets skip boto3
+
 ## 0.6.0 (2026-09-27)
 
 ### Feat
