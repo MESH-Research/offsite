@@ -31,7 +31,7 @@ from offsite_backup.ssh import prepare_ssh_home
 
 Handler = Callable[[Config, SimpleNamespace], int]
 
-RESTORE_TARGETS = ("db", "efs", "s3", "ecs")
+RESTORE_TARGETS: tuple[str, ...] = ("db", "efs", "s3", "ecs")
 
 
 def _not_implemented(cfg: Config, args: SimpleNamespace) -> int:
