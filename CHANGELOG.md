@@ -1,3 +1,9 @@
+## 0.5.1 (2026-09-26)
+
+### Refactor
+
+- **notify**: send HTTP via httpx2 and validate ntfy responses with Pydantic
+
 ## 0.5.0 (2026-09-26)
 
 ### Feat
