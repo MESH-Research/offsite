@@ -26,7 +26,7 @@ from offsite_backup.components.efs import EfsComponent
 from offsite_backup.config import Config, load_config
 from offsite_backup.errors import ConfigError
 from offsite_backup.notify import Notifier
-from offsite_backup.orchestrator import run_backup
+from offsite_backup.orchestrator import run_backup, select_targets
 from offsite_backup.restic import Restic
 from offsite_backup.ssh import prepare_ssh_home
 
@@ -40,17 +40,26 @@ def _not_implemented(cfg: Config, args: SimpleNamespace) -> int:
     raise NotImplementedError(f"command {args.command!r} is not implemented yet")
 
 
-def _build_components(cfg: Config) -> list[Component]:
-    """Compose the components implemented so far; later build steps add more.
+def build_components(
+    cfg: Config,
+    selected: Sequence[str],
+    *,
+    aws_client: Callable[[str], object] = boto3.client,
+) -> list[Component]:
+    """Build only the components named in `selected`, in that order.
 
-    Scratch space lives under the stable ``STAGING_DIR`` (never a random temp
-    directory): restic records absolute paths in snapshots, and a stable path
-    is what lets it find the parent snapshot and skip unchanged files.
+    Construction is lazy on purpose: a component's AWS client is created only
+    when that component is selected, so ``backup efs`` never touches the AWS
+    credential chain. Scratch space lives under the stable ``STAGING_DIR``
+    (never a random temp directory): restic records absolute paths in
+    snapshots, and a stable path is what lets it find the parent snapshot and
+    skip unchanged files. Later build steps register more factories here.
     """
-    return [
-        EcsComponent(cfg.ecs, boto3.client("ecs"), cfg.staging_dir / "ecs"),
-        EfsComponent(cfg.efs),
-    ]
+    factories: dict[str, Callable[[], Component]] = {
+        "ecs": lambda: EcsComponent(cfg.ecs, aws_client("ecs"), cfg.staging_dir / "ecs"),
+        "efs": lambda: EfsComponent(cfg.efs),
+    }
+    return [factories[name]() for name in selected if name in factories]
 
 
 def _run_backup(cfg: Config, args: SimpleNamespace) -> int:
@@ -62,12 +71,13 @@ def _run_backup(cfg: Config, args: SimpleNamespace) -> int:
             Restic(repo, host=cfg.restic_host, cache_dir=cfg.cache_dir, ssh_home=ssh_home)
             for repo in cfg.repos
         ]
+        selected = select_targets(cfg, list(args.targets))
         report = run_backup(
             cfg,
             restics=restics,
-            components=_build_components(cfg),
+            components=build_components(cfg, selected),
             notifier=Notifier(cfg.notify),
-            targets=list(args.targets),
+            targets=selected,
         )
     return report.exit_code()
 

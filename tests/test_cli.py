@@ -150,3 +150,33 @@ class TestHandlerErrors:
             code = main(["backup", "floppy"], handlers=handlers, dotenv=False)
         assert code == 2
         assert "floppy" in capsys.readouterr().err
+
+
+class TestBuildComponents:
+    def config(self):
+        from offsite_backup.config import load_config
+
+        with mock.patch.dict(os.environ, VALID_ENV, clear=True):
+            return load_config()
+
+    def test_only_selected_components_are_built_and_aws_is_untouched_for_efs(self):
+        from offsite_backup.__main__ import build_components
+
+        def no_aws(service):
+            raise AssertionError(f"unexpected AWS client for {service}")
+
+        components = build_components(self.config(), ["efs"], aws_client=no_aws)
+        assert [c.name for c in components] == ["efs"]
+
+    def test_ecs_selection_builds_its_client(self):
+        from offsite_backup.__main__ import build_components
+
+        requested = []
+
+        def fake_client(service):
+            requested.append(service)
+            return object()
+
+        components = build_components(self.config(), ["ecs", "efs"], aws_client=fake_client)
+        assert [c.name for c in components] == ["ecs", "efs"]
+        assert requested == ["ecs"]
