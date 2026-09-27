@@ -22,6 +22,7 @@ from environs import Env
 from offsite_backup.__version__ import __version__
 from offsite_backup.components.base import Component
 from offsite_backup.components.ecs import EcsComponent
+from offsite_backup.components.efs import EfsComponent
 from offsite_backup.config import Config, load_config
 from offsite_backup.errors import ConfigError
 from offsite_backup.notify import Notifier
@@ -46,7 +47,10 @@ def _build_components(cfg: Config) -> list[Component]:
     directory): restic records absolute paths in snapshots, and a stable path
     is what lets it find the parent snapshot and skip unchanged files.
     """
-    return [EcsComponent(cfg.ecs, boto3.client("ecs"), cfg.staging_dir / "ecs")]
+    return [
+        EcsComponent(cfg.ecs, boto3.client("ecs"), cfg.staging_dir / "ecs"),
+        EfsComponent(cfg.efs),
+    ]
 
 
 def _run_backup(cfg: Config, args: SimpleNamespace) -> int:
