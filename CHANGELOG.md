@@ -1,3 +1,20 @@
+## 0.6.0 (2026-09-27)
+
+### Feat
+
+- **cli**: wire the backup command to the orchestrator
+- **orchestrator**: run components, copy to mirrors, gate retention and notify
+- **ecs**: export task definitions, clusters and services as JSON
+
+### Fix
+
+- **cli**: widen restore target annotation so click.Choice type-checks
+- **backup**: stage exports under the stable STAGING_DIR so snapshot paths persist
+
+### Refactor
+
+- **restic**: parse restic JSON output with Pydantic models
+
 ## 0.5.1 (2026-09-26)
 
 ### Refactor
